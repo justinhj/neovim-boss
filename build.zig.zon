@@ -34,7 +34,7 @@
     .dependencies = .{
         .zig_msgpack = .{
             .url = "https://github.com/justinhj/zig-msgpack/archive/master.tar.gz",
-            .hash = "zig_msgpack-0.0.0-JYOKdcdtAgBv51M4HKD6FBum0mx848DRNJTs_n68EdAk",
+            .hash = "zig_msgpack-0.0.0-JYOKde99AgA0JeRC9c3kliwQ-qTPxT5lcFe6utONkDB-",
         },
     },
     .paths = .{

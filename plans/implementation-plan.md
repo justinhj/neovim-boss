@@ -20,19 +20,24 @@ Layer 1: Transport      — TCP, Unix socket, stdio, child process → reader/wr
 ## Project Structure
 
 ```
-zig-nvim/
-  build.zig
+neovim-boss/
+  build.zig              — includes codegen build step
   build.zig.zon          — depends on justinhj/zig-msgpack
+  data/
+    api_info.msgpack     — bundled Neovim API schema from `nvim --api-info`
+  tools/
+    codegen.zig          — parses api_info.msgpack and generates src/api.zig
   src/
-    root.zig              — Public API re-exports
-    transport.zig          — Layer 1: connection types → reader/writer pairs
-    client.zig             — Layer 3: RPC client with blocking request pattern
-    nvim.zig               — Layer 4: Nvim object, init handshake, convenience methods
-    nvim_types.zig         — Buffer, Window, Tabpage structs + ext encode/decode
-    object_util.zig        — walk() equivalent, MsgPackObject → Zig type helpers
+    root.zig             — Public API re-exports
+    transport.zig        — Layer 1: connection types → reader/writer pairs
+    client.zig           — Layer 3: RPC client with blocking request pattern
+    nvim.zig             — Layer 4: Nvim object, init handshake, convenience methods
+    nvim_types.zig       — Buffer, Window, Tabpage structs + ext encode/decode
+    object_util.zig      — walk() equivalent, MsgPackObject → Zig type helpers
+    api.zig              — Generated typed wrappers for all 260+ Neovim API functions
   examples/
-    basic.zig              — Connect to running nvim, eval, print result
-    embed.zig              — Spawn nvim --embed, run commands
+    basic.zig            — Connect to running nvim, eval, print result
+    embed.zig            — Spawn nvim --embed, run commands
 ```
 
 ## Key Design Decisions
@@ -48,11 +53,11 @@ zig-nvim/
 
 Every request method takes an `arena: Allocator`. Responses are allocated from it. Caller uses `ArenaAllocator` and resets after processing. No per-object free tracking needed.
 
-### Ext types: post-unpack conversion (not ExtensionRegistry)
+### Ext types & API Code Generation (from `api-info`)
 
-- Ext type codes aren't known until `nvim_get_api_info` completes
-- Conversion happens in the Nvim layer after unpacking, same as pynvim's `_from_nvim`/`_to_nvim`
-- Nvim struct stores the 3 ext type codes and converts MsgPackExtension → Buffer/Window/Tabpage
+- **Compile-time / Build-time Codegen**: Neovim's `nvim --api-info` outputs msgpack describing all 260+ API functions, parameters, return types, and ext type IDs. A build-time generator tool (`tools/codegen.zig`) parses bundled `data/api_info.msgpack` and generates `src/api.zig` containing strongly-typed wrappers for every API method.
+- **Runtime Handshake (`nvim_get_api_info`)**: At connect time (`Nvim.init`), the client sends `nvim_get_api_info` to get the dynamic `channel_id` (required for registering event listeners and `nvim_set_client_info`) and to verify API version compatibility against the compiled schema.
+- **Ext type conversion**: Ext types (`Buffer` = 0, `Window` = 1, `Tabpage` = 2) are decoded from MsgPackExtension directly into strongly-typed wrapper structs with attached helper methods (`buf.getLines()`, `win.setCursor()`, etc.).
 
 ### Error handling
 
@@ -85,8 +90,9 @@ Zig error unions for RPC errors. When nvim returns an error in the response, `re
    - Creates Client
    - Sends `nvim_set_client_info` notification
    - Sends `nvim_get_api_info` request → `[channel_id, metadata]`
-   - Parses `metadata.types.{Buffer,Window,Tabpage}.id` for ext type codes
-   - Convenience methods: `command()`, `eval()`, `callFunction()`, `execLua()`, `getCurrentBuf()`, `listBufs()`
+   - Records `channel_id` on Nvim struct (used for events and subscription callbacks)
+   - Validates ext type IDs (`Buffer`, `Window`, `Tabpage`) and API version against compiled schema
+   - Basic convenience methods: `command()`, `eval()`, `callFunction()`, `execLua()`
 
 ### Phase 3 — Full transport support
 
@@ -97,13 +103,20 @@ Zig error unions for RPC errors. When nvim returns an error in the response, `re
 9. Add `spawnChild(allocator, argv)` — `std.process.Child` with stdin/stdout pipes, default argv `["nvim", "--embed", "--headless"]`
 10. Top-level `attach()` in `root.zig` mirroring pynvim's `attach(transport_type, **kwargs)`
 
-### Phase 4 — Buffer/Window/Tabpage API
+### Phase 4 — API Code Generation from `api-info`
 
-**Files:** extend `src/nvim.zig`
+**Files:** `data/api_info.msgpack`, `tools/codegen.zig`, `src/api.zig`, `build.zig`
 
-11. Buffer methods: `bufGetLines`, `bufSetLines`, `bufGetName`, `bufLineCount`, `bufSetName`
-12. Window methods: `winGetBuf`, `winGetCursor`, `winSetCursor`, `winGetHeight`, `winGetWidth`
-13. Tabpage methods: `tabpageListWins`, `tabpageGetWin`
+11. **Bundled API metadata (`data/api_info.msgpack`)** — Frozen Neovim API schema extracted via `nvim --api-info` so compilation does not require `nvim` installed in `$PATH`.
+12. **API Codegen Tool (`tools/codegen.zig`)**:
+    - Unpacks `data/api_info.msgpack` using `zig-msgpack`
+    - Parses `functions`, `types`, and `version` tables
+    - Maps Neovim types to Zig types (`Integer` → `i64`, `Boolean` → `bool`, `String` → `[]const u8`, `Buffer`/`Window`/`Tabpage`, `Array`/`Dictionary`)
+    - Emits `src/api.zig` containing strongly-typed RPC wrappers for all 260+ Neovim API functions with automatic parameter packing and return value unpacking
+    - Attaches methods to `Buffer`, `Window`, and `Tabpage` structs for methods with `method = true` (`nvim_buf_*` → `buf.getLines()`, `nvim_win_*` → `win.getCursor()`, etc.)
+13. **Build system integration (`build.zig`)**:
+    - `zig build generate-api` — Compiles and executes `tools/codegen.zig` to regenerate `src/api.zig`
+    - `zig build update-api-info` — Runs host `nvim --api-info > data/api_info.msgpack` to sync against new Neovim versions
 
 ### Phase 5 — Notification handling and event loop (future)
 
@@ -117,8 +130,8 @@ After each phase:
 - **Phase 1**: Run `examples/basic.zig` against a running nvim (`nvim --listen /tmp/nvim.sock`). Should print `4` from `nvim_eval("2+2")`.
 - **Phase 2**: Run example that spawns embedded nvim, creates a buffer, gets its name. Verify Buffer ext type round-trips correctly.
 - **Phase 3**: Test all 4 transport types: unix socket, TCP (`nvim --listen 127.0.0.1:6666`), child process, stdio.
-- **Phase 4**: Write a test/example that manipulates buffer lines, moves cursor, reads window dimensions.
-- **Tests**: `zig build test` at each phase. Test transport connect/close, client request/response round-trip, ext type encode/decode, object_util helpers.
+- **Phase 4**: Run `zig build generate-api`. Run an example calling generated typed functions (e.g. `buf.getLines()`, `win.getCursor()`, `nvim_list_bufs()`) and verify type safety and error handling.
+- **Tests**: `zig build test` at each phase. Test transport connect/close, client request/response round-trip, ext type encode/decode, object_util helpers, and codegen output.
 
 ## References
 

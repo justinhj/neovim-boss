@@ -58,7 +58,7 @@ pub fn build(b: *std.Build) void {
     // If neither case applies to you, feel free to delete the declaration you
     // don't need and to put everything under a single module.
     const exe = b.addExecutable(.{
-        .name = "neovim_boss",
+        .name = "nb",
         .root_module = b.createModule(.{
             // b.createModule defines a new module just like b.addModule but,
             // unlike b.addModule, it does not expose the module to consumers of
@@ -110,6 +110,28 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
+
+    // Basic example
+    const basic_example = b.addExecutable(.{
+        .name = "basic",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/basic.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "neovim_boss", .module = mod },
+                .{ .name = "zig_msgpack", .module = msgpack },
+            },
+        }),
+    });
+    b.installArtifact(basic_example);
+
+    const run_basic_cmd = b.addRunArtifact(basic_example);
+    if (b.args) |args| {
+        run_basic_cmd.addArgs(args);
+    }
+    const run_basic_step = b.step("run-basic", "Run the basic example (requires running nvim --listen <sock>)");
+    run_basic_step.dependOn(&run_basic_cmd.step);
 
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
