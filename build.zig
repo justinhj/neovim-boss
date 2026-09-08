@@ -133,6 +133,28 @@ pub fn build(b: *std.Build) void {
     const run_basic_step = b.step("run-basic", "Run the basic example (requires running nvim --listen <sock>)");
     run_basic_step.dependOn(&run_basic_cmd.step);
 
+    // Phase 2 demo
+    const phase2_example = b.addExecutable(.{
+        .name = "phase2",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/phase2.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "neovim_boss", .module = mod },
+                .{ .name = "zig_msgpack", .module = msgpack },
+            },
+        }),
+    });
+    b.installArtifact(phase2_example);
+
+    const run_phase2_cmd = b.addRunArtifact(phase2_example);
+    if (b.args) |args| {
+        run_phase2_cmd.addArgs(args);
+    }
+    const run_phase2_step = b.step("run-phase2", "Run the phase 2 demo (requires running nvim --listen <sock>)");
+    run_phase2_step.dependOn(&run_phase2_cmd.step);
+
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
     // set the releative field.
