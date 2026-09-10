@@ -1,5 +1,6 @@
 # neovim-boss (`nb`)
 
+```  
   __      __
  <  \____/  >
   | [x][x] |
@@ -8,6 +9,7 @@
   //| O  |\\
  (  |____|  )
     d'  'b
+```
 
 A high-performance, robust, and strongly-typed **Neovim API client library and CLI** for [Zig](https://ziglang.org) (v0.16.0+), built on [`justinhj/zig-msgpack`](https://github.com/justinhj/zig-msgpack).
 
