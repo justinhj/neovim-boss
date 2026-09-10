@@ -1,4 +1,4 @@
-# Plan: zig-nvim — A Zig Neovim Client Library
+# Plan: neovim-boss — A Zig Neovim Client Library
 
 ## Context
 
