@@ -43,5 +43,6 @@
         "src",
         "data",
         "README.md",
+        "LICENSE",
     },
 }
