@@ -11,6 +11,7 @@ const Window = nvim_types.Window;
 const Tabpage = nvim_types.Tabpage;
 const ExtTypes = nvim_types.ExtTypes;
 const object_util = @import("object_util.zig");
+const build_info = @import("build_info");
 
 pub const NvimError = error{
     HandshakeFailed,
@@ -84,14 +85,14 @@ pub const Nvim = struct {
     }
 
     fn sendClientInfo(self: *Nvim, alloc: std.mem.Allocator) !void {
-        // Build version map
+        // Build version map from build_info
         var v_maj_k = "major".*;
         var v_min_k = "minor".*;
         var v_pat_k = "patch".*;
         const version_entries = try alloc.dupe(MsgPackMapEntry, &[_]MsgPackMapEntry{
-            .{ .key = .{ .string = &v_maj_k }, .value = .{ .integer = 0 } },
-            .{ .key = .{ .string = &v_min_k }, .value = .{ .integer = 0 } },
-            .{ .key = .{ .string = &v_pat_k }, .value = .{ .integer = 1 } },
+            .{ .key = .{ .string = &v_maj_k }, .value = .{ .integer = @intCast(build_info.version_major) } },
+            .{ .key = .{ .string = &v_min_k }, .value = .{ .integer = @intCast(build_info.version_minor) } },
+            .{ .key = .{ .string = &v_pat_k }, .value = .{ .integer = @intCast(build_info.version_patch) } },
         });
 
         var name = "neovim-boss".*;

@@ -1,12 +1,13 @@
 const std = @import("std");
+const zon = @import("build.zig.zon");
 
-// Although this function looks imperative, it does not perform the build
-// directly and instead it mutates the build graph (`b`) that will be then
-// executed by an external runner. The functions in `std.Build` implement a DSL
-// for defining build steps and express dependencies between them, allowing the
-// build runner to parallelize the build automatically (and the cache system to
-// know when a step doesn't need to be re-run).
 pub fn build(b: *std.Build) void {
+    const version = std.SemanticVersion.parse(zon.version) catch unreachable;
+    const build_info = b.addOptions();
+    build_info.addOption(usize, "version_major", version.major);
+    build_info.addOption(usize, "version_minor", version.minor);
+    build_info.addOption(usize, "version_patch", version.patch);
+    build_info.addOption([]const u8, "version_string", zon.version);
     // Standard target options allow the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
     // means any target is allowed, and the default is native. Other options
@@ -38,6 +39,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .imports = &.{
             .{ .name = "zig_msgpack", .module = msgpack },
+            .{ .name = "build_info", .module = build_info.createModule() },
         },
     });
 

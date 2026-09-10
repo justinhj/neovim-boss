@@ -1,6 +1,8 @@
 const std = @import("std");
 
 pub const msgpack = @import("zig_msgpack");
+pub const build_info = @import("build_info");
+pub const version = build_info.version_string;
 
 pub const transport = @import("transport.zig");
 pub const Transport = transport.Transport;
