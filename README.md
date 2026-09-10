@@ -1,5 +1,14 @@
 # neovim-boss (`nb`)
 
+  __      __
+ <  \____/  >
+  | [x][x] |
+  \   <>   /
+    |    |
+  //| O  |\\
+ (  |____|  )
+    d'  'b
+
 A high-performance, robust, and strongly-typed **Neovim API client library and CLI** for [Zig](https://ziglang.org) (v0.16.0+), built on [`justinhj/zig-msgpack`](https://github.com/justinhj/zig-msgpack).
 
 `neovim-boss` provides complete programmatic control over running or embedded Neovim instances via MessagePack-RPC. It is designed both as a standalone library for Zig applications and as the underlying engine for an upcoming **Neovim Model Context Protocol (MCP) server**, allowing AI agents and LLM tools to introspect, query, edit buffers, and interact with your editor in real time.
