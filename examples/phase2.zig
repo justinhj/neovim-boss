@@ -38,8 +38,7 @@ pub fn main(init: std.process.Init) !void {
     _ = try stdout.write("...\n");
     try stdout.flush();
 
-    const transport = try neovim_boss.Transport.connectUnix(io, socket_path);
-    var nvim = try Nvim.init(gpa, transport);
+    var nvim = try neovim_boss.attachAddress(gpa, io, socket_path);
     defer nvim.deinit();
 
     var out_buf: [128]u8 = undefined;

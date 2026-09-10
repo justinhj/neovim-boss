@@ -95,104 +95,10 @@ pub fn encodeHandleAlloc(arena: std.mem.Allocator, handle: i64) ![]u8 {
     return arena.dupe(u8, slice);
 }
 
-/// A remote Neovim Buffer handle.
-pub const Buffer = struct {
-    handle: i64,
-
-    pub const default_ext_type: i8 = 0;
-
-    pub fn decode(ext: msgpack.MsgPackExtension) TypeError!Buffer {
-        return .{ .handle = try decodeHandle(ext.data) };
-    }
-
-    pub fn encode(self: Buffer, arena: std.mem.Allocator, ext_type: i8) !msgpack.MsgPackExtension {
-        return .{
-            .type = ext_type,
-            .data = try encodeHandleAlloc(arena, self.handle),
-        };
-    }
-
-    pub fn toObject(self: Buffer, arena: std.mem.Allocator, ext_type: i8) !msgpack.MsgPackObject {
-        return .{ .extension = try self.encode(arena, ext_type) };
-    }
-
-    pub fn format(
-        self: Buffer,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
-        try writer.print("Buffer({d})", .{self.handle});
-    }
-};
-
-/// A remote Neovim Window handle.
-pub const Window = struct {
-    handle: i64,
-
-    pub const default_ext_type: i8 = 1;
-
-    pub fn decode(ext: msgpack.MsgPackExtension) TypeError!Window {
-        return .{ .handle = try decodeHandle(ext.data) };
-    }
-
-    pub fn encode(self: Window, arena: std.mem.Allocator, ext_type: i8) !msgpack.MsgPackExtension {
-        return .{
-            .type = ext_type,
-            .data = try encodeHandleAlloc(arena, self.handle),
-        };
-    }
-
-    pub fn toObject(self: Window, arena: std.mem.Allocator, ext_type: i8) !msgpack.MsgPackObject {
-        return .{ .extension = try self.encode(arena, ext_type) };
-    }
-
-    pub fn format(
-        self: Window,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
-        try writer.print("Window({d})", .{self.handle});
-    }
-};
-
-/// A remote Neovim Tabpage handle.
-pub const Tabpage = struct {
-    handle: i64,
-
-    pub const default_ext_type: i8 = 2;
-
-    pub fn decode(ext: msgpack.MsgPackExtension) TypeError!Tabpage {
-        return .{ .handle = try decodeHandle(ext.data) };
-    }
-
-    pub fn encode(self: Tabpage, arena: std.mem.Allocator, ext_type: i8) !msgpack.MsgPackExtension {
-        return .{
-            .type = ext_type,
-            .data = try encodeHandleAlloc(arena, self.handle),
-        };
-    }
-
-    pub fn toObject(self: Tabpage, arena: std.mem.Allocator, ext_type: i8) !msgpack.MsgPackObject {
-        return .{ .extension = try self.encode(arena, ext_type) };
-    }
-
-    pub fn format(
-        self: Tabpage,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
-        try writer.print("Tabpage({d})", .{self.handle});
-    }
-};
+const api = @import("api.zig");
+pub const Buffer = api.Buffer;
+pub const Window = api.Window;
+pub const Tabpage = api.Tabpage;
 
 /// Registry of ext type codes received from Neovim during handshake.
 pub const ExtTypes = struct {

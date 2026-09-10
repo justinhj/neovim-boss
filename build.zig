@@ -157,6 +157,78 @@ pub fn build(b: *std.Build) void {
     const run_phase2_step = b.step("run-phase2", "Run the phase 2 demo (requires running nvim --listen <sock>)");
     run_phase2_step.dependOn(&run_phase2_cmd.step);
 
+    // Embed example (spawns nvim --embed --headless automatically)
+    const embed_example = b.addExecutable(.{
+        .name = "embed",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/embed.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "neovim_boss", .module = mod },
+                .{ .name = "zig_msgpack", .module = msgpack },
+            },
+        }),
+    });
+    b.installArtifact(embed_example);
+
+    const run_embed_cmd = b.addRunArtifact(embed_example);
+    if (b.args) |args| {
+        run_embed_cmd.addArgs(args);
+    }
+    const run_embed_step = b.step("run-embed", "Run the embed example (spawns headless nvim automatically)");
+    run_embed_step.dependOn(&run_embed_cmd.step);
+
+    // Phase 4 example (tests generated API)
+    const phase4_example = b.addExecutable(.{
+        .name = "phase4",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/phase4.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "neovim_boss", .module = mod },
+                .{ .name = "zig_msgpack", .module = msgpack },
+            },
+        }),
+    });
+    b.installArtifact(phase4_example);
+
+    const run_phase4_cmd = b.addRunArtifact(phase4_example);
+    if (b.args) |args| {
+        run_phase4_cmd.addArgs(args);
+    }
+    const run_phase4_step = b.step("run-phase4", "Run the phase 4 demo (tests generated typed Neovim API)");
+    run_phase4_step.dependOn(&run_phase4_cmd.step);
+
+    // Codegen tool
+    const codegen_exe = b.addExecutable(.{
+        .name = "codegen",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/codegen.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zig_msgpack", .module = msgpack },
+            },
+        }),
+    });
+    b.installArtifact(codegen_exe);
+
+    const run_codegen_cmd = b.addRunArtifact(codegen_exe);
+    if (b.args) |args| {
+        run_codegen_cmd.addArgs(args);
+    }
+    const generate_api_step = b.step("generate-api", "Generate Zig API bindings from data/api_info.msgpack");
+    generate_api_step.dependOn(&run_codegen_cmd.step);
+
+    // Update API info from host Neovim
+    const update_api_info_cmd = b.addSystemCommand(&.{
+        "sh", "-c", "nvim --api-info > data/api_info.msgpack",
+    });
+    const update_api_info_step = b.step("update-api-info", "Dump API info from host nvim to data/api_info.msgpack");
+    update_api_info_step.dependOn(&update_api_info_cmd.step);
+
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
     // set the releative field.

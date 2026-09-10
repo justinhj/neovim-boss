@@ -44,6 +44,10 @@ pub const Nvim = struct {
         self.client.deinit();
     }
 
+    pub fn api(self: *Nvim) @import("api.zig").Api {
+        return .{ .nvim = self };
+    }
+
     fn performHandshake(self: *Nvim) !void {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
