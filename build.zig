@@ -201,6 +201,28 @@ pub fn build(b: *std.Build) void {
     const run_phase4_step = b.step("run-phase4", "Run the phase 4 demo (tests generated typed Neovim API)");
     run_phase4_step.dependOn(&run_phase4_cmd.step);
 
+    // Phase 5 example (notifications, reverse RPC, event loop)
+    const phase5_example = b.addExecutable(.{
+        .name = "phase5",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/phase5.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "neovim_boss", .module = mod },
+                .{ .name = "zig_msgpack", .module = msgpack },
+            },
+        }),
+    });
+    b.installArtifact(phase5_example);
+
+    const run_phase5_cmd = b.addRunArtifact(phase5_example);
+    if (b.args) |args| {
+        run_phase5_cmd.addArgs(args);
+    }
+    const run_phase5_step = b.step("run-phase5", "Run the phase 5 demo (notifications, reverse RPC, event loop)");
+    run_phase5_step.dependOn(&run_phase5_cmd.step);
+
     // Codegen tool
     const codegen_exe = b.addExecutable(.{
         .name = "codegen",

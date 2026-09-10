@@ -12,6 +12,8 @@ pub const client = @import("client.zig");
 pub const Client = client.Client;
 pub const ClientError = client.ClientError;
 pub const NotificationHandler = client.NotificationHandler;
+pub const RequestHandler = client.RequestHandler;
+pub const RequestResult = client.RequestResult;
 
 pub const nvim_types = @import("nvim_types.zig");
 pub const Buffer = nvim_types.Buffer;
@@ -158,4 +160,133 @@ test "root: api generated functions and Buffer/Window methods with embedded chil
     // 5. Test nvim.api() method syntax
     const bufs = try n_instance.api().nvim_list_bufs(alloc);
     try std.testing.expect(bufs.len >= 1);
+}
+
+test "root: reverse RPC and re-entrant request" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var n_instance = try attach(allocator, io, .{ .child = null });
+    defer n_instance.deinit();
+
+    const HandlerCtx = struct {
+        calls: usize = 0,
+
+        fn handleRequest(user_data: ?*anyopaque, req: msgpack.RpcRequest, arena: std.mem.Allocator) RequestResult {
+            _ = arena;
+            const ctx: *@This() = @ptrCast(@alignCast(user_data.?));
+            ctx.calls += 1;
+
+            if (std.mem.eql(u8, req.method, "multiply")) {
+                if (req.params.len >= 2 and req.params[0] == .integer and req.params[1] == .integer) {
+                    const a = req.params[0].integer;
+                    const b = req.params[1].integer;
+                    return .{ .result = .{ .integer = a * b } };
+                }
+            }
+            var err = "unknown method".*;
+            return .{ .@"error" = .{ .string = &err } };
+        }
+    };
+
+    var ctx = HandlerCtx{};
+    n_instance.setRequestHandler(&ctx, HandlerCtx.handleRequest);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var eval_buf: [128]u8 = undefined;
+    const expr = try std.fmt.bufPrint(&eval_buf, "rpcrequest({d}, 'multiply', 6, 7)", .{n_instance.channel_id});
+
+    const res = try n_instance.eval(alloc, expr);
+    try std.testing.expect(res == .integer);
+    try std.testing.expectEqual(@as(i64, 42), res.integer);
+    try std.testing.expectEqual(@as(usize, 1), ctx.calls);
+}
+
+test "root: notifications received mid-request" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var n_instance = try attach(allocator, io, .{ .child = null });
+    defer n_instance.deinit();
+
+    const NotifCtx = struct {
+        received_method: ?[]const u8 = null,
+        received_arg: ?i64 = null,
+
+        fn handleNotification(user_data: ?*anyopaque, notif: msgpack.RpcNotification) void {
+            const ctx: *@This() = @ptrCast(@alignCast(user_data.?));
+            if (std.mem.eql(u8, notif.method, "sync_event")) {
+                ctx.received_method = notif.method;
+                if (notif.params.len > 0 and notif.params[0] == .integer) {
+                    ctx.received_arg = notif.params[0].integer;
+                }
+            }
+        }
+    };
+
+    var notif_ctx = NotifCtx{};
+    n_instance.setNotificationHandler(&notif_ctx, NotifCtx.handleNotification);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var cmd_buf: [128]u8 = undefined;
+    const cmd = try std.fmt.bufPrint(&cmd_buf, "call rpcnotify({d}, 'sync_event', 99)", .{n_instance.channel_id});
+    try n_instance.command(alloc, cmd);
+
+    try std.testing.expect(notif_ctx.received_method != null);
+    try std.testing.expectEqualStrings("sync_event", notif_ctx.received_method.?);
+    try std.testing.expectEqual(@as(i64, 99), notif_ctx.received_arg.?);
+}
+
+test "root: runLoop with deferred notification" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var n_instance = try attach(allocator, io, .{ .child = null });
+    defer n_instance.deinit();
+
+    const NotifCtx = struct {
+        received_method: ?[]const u8 = null,
+        received_arg: ?i64 = null,
+        nvim: *Nvim,
+
+        fn handleNotification(user_data: ?*anyopaque, notif: msgpack.RpcNotification) void {
+            const ctx: *@This() = @ptrCast(@alignCast(user_data.?));
+            if (std.mem.eql(u8, notif.method, "async_event")) {
+                ctx.received_method = notif.method;
+                if (notif.params.len > 0 and notif.params[0] == .integer) {
+                    ctx.received_arg = notif.params[0].integer;
+                }
+                ctx.nvim.stopLoop();
+            }
+        }
+    };
+
+    var notif_ctx = NotifCtx{ .nvim = &n_instance };
+    n_instance.setNotificationHandler(&notif_ctx, NotifCtx.handleNotification);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Schedule notification 20ms in the future via Neovim Lua timer
+    var lua_buf: [256]u8 = undefined;
+    const lua_code = try std.fmt.bufPrint(
+        &lua_buf,
+        "vim.defer_fn(function() vim.fn.rpcnotify({d}, 'async_event', 123) end, 20)",
+        .{n_instance.channel_id},
+    );
+    _ = try n_instance.execLua(alloc, lua_code, &.{});
+
+    // Enter runLoop - waits for the deferred notification, which calls stopLoop()
+    try n_instance.runLoop();
+
+    try std.testing.expect(notif_ctx.received_method != null);
+    try std.testing.expectEqualStrings("async_event", notif_ctx.received_method.?);
+    try std.testing.expectEqual(@as(i64, 123), notif_ctx.received_arg.?);
 }

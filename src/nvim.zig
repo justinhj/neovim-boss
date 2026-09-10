@@ -4,7 +4,11 @@ const MsgPackObject = msgpack.MsgPackObject;
 const MsgPackMapEntry = msgpack.MsgPackMapEntry;
 
 const Transport = @import("transport.zig").Transport;
-const Client = @import("client.zig").Client;
+const client_mod = @import("client.zig");
+const Client = client_mod.Client;
+pub const NotificationHandler = client_mod.NotificationHandler;
+pub const RequestHandler = client_mod.RequestHandler;
+pub const RequestResult = client_mod.RequestResult;
 const nvim_types = @import("nvim_types.zig");
 const Buffer = nvim_types.Buffer;
 const Window = nvim_types.Window;
@@ -200,6 +204,57 @@ pub const Nvim = struct {
             },
             else => error.UnexpectedType,
         };
+    }
+
+    /// Set an optional callback to handle RPC notifications.
+    pub fn setNotificationHandler(
+        self: *Nvim,
+        user_data: ?*anyopaque,
+        handler: ?NotificationHandler,
+    ) void {
+        self.client.setNotificationHandler(user_data, handler);
+    }
+
+    /// Set an optional callback to handle reverse RPC requests from Neovim.
+    pub fn setRequestHandler(
+        self: *Nvim,
+        user_data: ?*anyopaque,
+        handler: ?RequestHandler,
+    ) void {
+        self.client.setRequestHandler(user_data, handler);
+    }
+
+    /// Run the event loop continuously until stopLoop() is called or the connection drops.
+    pub fn runLoop(self: *Nvim) !void {
+        try self.client.runLoop();
+    }
+
+    /// Stop the running event loop.
+    pub fn stopLoop(self: *Nvim) void {
+        self.client.stopLoop();
+    }
+
+    /// Process one message if available.
+    pub fn processOne(self: *Nvim, arena: std.mem.Allocator) !bool {
+        return self.client.processOne(arena);
+    }
+
+    /// Subscribe to a broadcast event.
+    pub fn subscribe(self: *Nvim, arena: std.mem.Allocator, event: []const u8) !void {
+        const event_mut = try arena.dupe(u8, event);
+        const params = [_]MsgPackObject{
+            .{ .string = event_mut },
+        };
+        _ = try self.client.request(arena, "nvim_subscribe", &params);
+    }
+
+    /// Unsubscribe from a broadcast event.
+    pub fn unsubscribe(self: *Nvim, arena: std.mem.Allocator, event: []const u8) !void {
+        const event_mut = try arena.dupe(u8, event);
+        const params = [_]MsgPackObject{
+            .{ .string = event_mut },
+        };
+        _ = try self.client.request(arena, "nvim_unsubscribe", &params);
     }
 };
 

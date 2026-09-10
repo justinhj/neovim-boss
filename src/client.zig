@@ -7,8 +7,19 @@ pub const ClientError = anyerror;
 
 pub const NotificationHandler = *const fn (user_data: ?*anyopaque, notification: msgpack.RpcNotification) void;
 
+pub const RequestResult = struct {
+    result: ?msgpack.MsgPackObject = null,
+    @"error": ?msgpack.MsgPackObject = null,
+};
+
+pub const RequestHandler = *const fn (
+    user_data: ?*anyopaque,
+    request: msgpack.RpcRequest,
+    arena: std.mem.Allocator,
+) RequestResult;
+
 /// Layer 3: RPC Client tracking message IDs, sending blocking requests,
-/// and dispatching notifications.
+/// dispatching notifications, and handling reverse RPC requests.
 pub const Client = struct {
     allocator: std.mem.Allocator,
     transport: Transport,
@@ -18,6 +29,9 @@ pub const Client = struct {
     last_error_message: ?[]u8 = null,
     notification_handler: ?NotificationHandler = null,
     notification_user_data: ?*anyopaque = null,
+    request_handler: ?RequestHandler = null,
+    request_user_data: ?*anyopaque = null,
+    running: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, transport: Transport) !Client {
         const session = msgpack.RpcSession.init(allocator);
@@ -49,6 +63,16 @@ pub const Client = struct {
     ) void {
         self.notification_user_data = user_data;
         self.notification_handler = handler;
+    }
+
+    /// Set an optional callback to handle reverse RPC requests from Neovim.
+    pub fn setRequestHandler(
+        self: *Client,
+        user_data: ?*anyopaque,
+        handler: ?RequestHandler,
+    ) void {
+        self.request_user_data = user_data;
+        self.request_handler = handler;
     }
 
     /// Retrieve the error message from the most recent RPC error response, if available.
@@ -116,8 +140,8 @@ pub const Client = struct {
                             handler(self.notification_user_data, notif);
                         }
                     },
-                    .request => {
-                        // Reverse RPC request (handling deferred to Phase 5)
+                    .request => |req| {
+                        try self.handleRequest(arena, req);
                     },
                 }
             } else {
@@ -126,6 +150,74 @@ pub const Client = struct {
                 if (n == 0) return error.EndOfStream;
                 try self.unpacker.feed(read_buf[0..n]);
             }
+        }
+    }
+
+    /// Process and respond to a reverse RPC request from Neovim.
+    pub fn handleRequest(
+        self: *Client,
+        arena: std.mem.Allocator,
+        req: msgpack.RpcRequest,
+    ) !void {
+        var p = msgpack.Packer.init(arena);
+        defer p.deinit();
+
+        if (self.request_handler) |handler| {
+            const res = handler(self.request_user_data, req, arena);
+            try msgpack.rpc.packResponse(&p, req.msgid, res.@"error", res.result);
+        } else {
+            var err_str = "Method not supported".*;
+            try msgpack.rpc.packResponse(&p, req.msgid, .{ .string = &err_str }, null);
+        }
+        try self.transport.writeAll(p.getSlice());
+    }
+
+    /// Signal the event loop to terminate.
+    pub fn stopLoop(self: *Client) void {
+        self.running = false;
+    }
+
+    /// Run the event loop continuously, reading messages from the transport and dispatching
+    /// notifications and requests until stopLoop() is called or the transport closes.
+    pub fn runLoop(self: *Client) !void {
+        self.running = true;
+        var read_buf: [4096]u8 = undefined;
+
+        while (self.running) {
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            const alloc = arena.allocator();
+
+            if (try self.poll(alloc)) |msg| {
+                try self.dispatchMessage(alloc, msg);
+            } else {
+                const n = try self.transport.read(&read_buf);
+                if (n == 0) break; // EOF / transport closed
+                try self.unpacker.feed(read_buf[0..n]);
+            }
+        }
+    }
+
+    /// Process one message if available. Returns true if a message was dispatched.
+    pub fn processOne(self: *Client, arena: std.mem.Allocator) !bool {
+        if (try self.poll(arena)) |msg| {
+            try self.dispatchMessage(arena, msg);
+            return true;
+        }
+        return false;
+    }
+
+    fn dispatchMessage(self: *Client, arena: std.mem.Allocator, msg: msgpack.RpcMessage) !void {
+        switch (msg) {
+            .notification => |notif| {
+                if (self.notification_handler) |handler| {
+                    handler(self.notification_user_data, notif);
+                }
+            },
+            .request => |req| {
+                try self.handleRequest(arena, req);
+            },
+            .response => {},
         }
     }
 
