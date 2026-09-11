@@ -38,6 +38,8 @@ pub const NvimError = nvim.NvimError;
 pub const api = @import("api.zig");
 pub const Api = api.Api;
 
+pub const mcp = @import("mcp.zig");
+
 pub const AttachTarget = union(enum) {
     socket: []const u8,
     tcp: struct { host: []const u8, port: u16 },
@@ -89,6 +91,7 @@ test {
     _ = nvim_types;
     _ = object_util;
     _ = nvim;
+    _ = mcp;
 }
 
 test "root: attach embedded child nvim" {
@@ -289,4 +292,99 @@ test "root: runLoop with deferred notification" {
     try std.testing.expect(notif_ctx.received_method != null);
     try std.testing.expectEqualStrings("async_event", notif_ctx.received_method.?);
     try std.testing.expectEqual(@as(i64, 123), notif_ctx.received_arg.?);
+}
+
+test "mcp: list tools and resources" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const tool_list = try mcp.tools.listTools(alloc);
+    try std.testing.expectEqual(@as(usize, 1), tool_list.len);
+    try std.testing.expectEqualStrings("eval_vimscript", tool_list[0].name);
+
+    const res_list = try mcp.resources.listResources(alloc);
+    try std.testing.expectEqual(@as(usize, 1), res_list.len);
+    try std.testing.expectEqualStrings("neovim://buffers", res_list[0].uri);
+}
+
+test "mcp: tool call eval_vimscript with embedded child nvim" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var n_instance = try attach(allocator, io, .{ .child = null });
+    defer n_instance.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Valid eval
+    var args_map: std.json.ObjectMap = .empty;
+    try args_map.put(alloc, "expr", .{ .string = "6 * 7" });
+    const res = try mcp.tools.callTool(&n_instance, alloc, "eval_vimscript", .{ .object = args_map });
+    try std.testing.expectEqual(false, res.isError);
+    try std.testing.expectEqual(@as(usize, 1), res.content.len);
+    try std.testing.expectEqualStrings("42", res.content[0].text);
+
+    // Invalid syntax eval
+    var bad_args: std.json.ObjectMap = .empty;
+    try bad_args.put(alloc, "expr", .{ .string = "syntax error (((" });
+    const err_res = try mcp.tools.callTool(&n_instance, alloc, "eval_vimscript", .{ .object = bad_args });
+    try std.testing.expectEqual(true, err_res.isError);
+}
+
+test "mcp: resource read neovim://buffers with embedded child nvim" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var n_instance = try attach(allocator, io, .{ .child = null });
+    defer n_instance.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const res = try mcp.resources.readResource(&n_instance, alloc, "neovim://buffers");
+    try std.testing.expectEqual(@as(usize, 1), res.contents.len);
+    try std.testing.expectEqualStrings("neovim://buffers", res.contents[0].uri);
+    try std.testing.expect(res.contents[0].mimeType != null);
+    try std.testing.expectEqualStrings("application/json", res.contents[0].mimeType.?);
+    try std.testing.expect(std.mem.indexOf(u8, res.contents[0].text, "\"id\":") != null);
+}
+
+test "mcp: server handleLine protocol requests" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var n_instance = try attach(allocator, io, .{ .child = null });
+    defer n_instance.deinit();
+
+    var server = mcp.Server.init(allocator, io, &n_instance);
+
+    var pipe_fds: [2]c_int = undefined;
+    if (std.c.pipe(&pipe_fds) != 0) return error.PipeFailed;
+    defer _ = std.c.close(pipe_fds[0]);
+    defer _ = std.c.close(pipe_fds[1]);
+
+    server.stdout_fd = pipe_fds[1];
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // 1. Test initialize
+    const init_req = "{\"jsonrpc\":\"2.0\",\"id\":100,\"method\":\"initialize\",\"params\":{}}";
+    try server.handleLine(alloc, init_req);
+
+    var out_buf: [2048]u8 = undefined;
+    const n = std.c.read(pipe_fds[0], &out_buf, out_buf.len);
+    try std.testing.expect(n > 0);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, out_buf[0..@intCast(n)], .{});
+    try std.testing.expectEqual(@as(i64, 100), parsed.value.object.get("id").?.integer);
+    const result_obj = parsed.value.object.get("result").?.object;
+    try std.testing.expectEqualStrings("2024-11-05", result_obj.get("protocolVersion").?.string);
+    try std.testing.expectEqualStrings("neovim-boss", result_obj.get("serverInfo").?.object.get("name").?.string);
 }

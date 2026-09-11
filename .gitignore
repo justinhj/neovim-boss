@@ -2,3 +2,4 @@
 zig-out/
 .mise.local.toml
 zig-pkg/
+.agents/

@@ -4,67 +4,59 @@ const Io = std.Io;
 const neovim_boss = @import("neovim_boss");
 
 pub fn main(init: std.process.Init) !void {
-    // Prints to stderr, unbuffered, ignoring potential errors.
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
-
-    // This is appropriate for anything that lives as long as the process.
     const arena: std.mem.Allocator = init.arena.allocator();
-
-    // Accessing command line arguments:
     const args = try init.minimal.args.toSlice(arena);
-    for (args) |arg| {
-        std.log.info("arg: {s}", .{arg});
-    }
-
-    // In order to do I/O operations need an `Io` instance.
     const io = init.io;
 
-    // Stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
-    const stdout_writer = &stdout_file_writer.interface;
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "mcp")) {
+        const maybe_target: ?[]const u8 = if (args.len >= 3)
+            args[2]
+        else if (init.environ_map.get("NVIM")) |nvim_env|
+            if (nvim_env.len > 0) nvim_env else null
+        else
+            null;
 
-    _ = try stdout_writer.write("neovim-boss (nb)\n");
-    try stdout_writer.flush(); // Don't forget to flush!
+        const target = maybe_target orelse {
+            std.debug.print(
+                \\Usage: nb mcp [listener]
+                \\
+                \\Runs the neovim-boss Model Context Protocol (MCP) server over stdio.
+                \\
+                \\Supported listeners:
+                \\  /path/to/socket    Unix domain socket (e.g. /tmp/nvim.sock)
+                \\  host:port          TCP socket (e.g. 127.0.0.1:6666)
+                \\  child              Embedded headless Neovim child process
+                \\  stdio              Standard I/O Neovim process
+                \\
+                \\If no listener is provided, the $NVIM environment variable is used if set.
+                \\
+            , .{});
+            return;
+        };
+
+        var nvim = neovim_boss.attachAddress(arena, io, target) catch |err| {
+            std.debug.print("Failed to connect to Neovim at '{s}': {s}\n", .{ target, @errorName(err) });
+            return err;
+        };
+        defer nvim.deinit();
+
+        try neovim_boss.mcp.run(arena, io, &nvim);
+        return;
+    }
+
+    std.debug.print(
+        \\neovim-boss (nb) {s} - Neovim control plane for humans and AI
+        \\
+        \\Usage:
+        \\  nb mcp [listener]    Start the MCP server over stdio
+        \\
+    , .{neovim_boss.version});
 }
 
 test "simple test" {
     const gpa = std.testing.allocator;
     var list: std.ArrayList(i32) = .empty;
-    defer list.deinit(gpa); // Try commenting this out and see if zig detects the memory leak!
+    defer list.deinit(gpa);
     try list.append(gpa, 42);
     try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
-
-test "fuzz example" {
-    try std.testing.fuzz({}, testOne, .{});
-}
-
-fn testOne(context: void, smith: *std.testing.Smith) !void {
-    _ = context;
-    // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-
-    const gpa = std.testing.allocator;
-    var list: std.ArrayList(u8) = .empty;
-    defer list.deinit(gpa);
-    while (!smith.eos()) switch (smith.value(enum { add_data, dup_data })) {
-        .add_data => {
-            const slice = try list.addManyAsSlice(gpa, smith.value(u4));
-            smith.bytes(slice);
-        },
-        .dup_data => {
-            if (list.items.len == 0) continue;
-            if (list.items.len > std.math.maxInt(u32)) return error.SkipZigTest;
-            const len = smith.valueRangeAtMost(u32, 1, @min(32, list.items.len));
-            const off = smith.valueRangeAtMost(u32, 0, @intCast(list.items.len - len));
-            try list.appendSlice(gpa, list.items[off..][0..len]);
-            try std.testing.expectEqualSlices(
-                u8,
-                list.items[off..][0..len],
-                list.items[list.items.len - len ..],
-            );
-        },
-    };
 }
