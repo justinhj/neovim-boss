@@ -206,6 +206,73 @@ pub const Nvim = struct {
         };
     }
 
+    /// List open buffers with detailed metadata in 1 RPC round trip.
+    pub fn listBufInfo(
+        self: *Nvim,
+        arena: std.mem.Allocator,
+        opts: nvim_types.ListBufInfoOptions,
+    ) ![]nvim_types.BufferInfo {
+        var filter: []const u8 = "";
+        if (opts.buflisted != null or opts.bufloaded != null or opts.bufmodified != null) {
+            var parts: [3][]const u8 = undefined;
+            var count: usize = 0;
+            if (opts.buflisted) |b| {
+                parts[count] = try std.fmt.allocPrint(arena, "\"buflisted\": {d}", .{if (b) @as(u8, 1) else 0});
+                count += 1;
+            }
+            if (opts.bufloaded) |b| {
+                parts[count] = try std.fmt.allocPrint(arena, "\"bufloaded\": {d}", .{if (b) @as(u8, 1) else 0});
+                count += 1;
+            }
+            if (opts.bufmodified) |b| {
+                parts[count] = try std.fmt.allocPrint(arena, "\"bufmodified\": {d}", .{if (b) @as(u8, 1) else 0});
+                count += 1;
+            }
+            const joined = try std.mem.join(arena, ", ", parts[0..count]);
+            filter = try std.fmt.allocPrint(arena, "{{{s}}}", .{joined});
+        }
+
+        const expr = if (filter.len > 0)
+            try std.fmt.allocPrint(arena, "map(getbufinfo({s}), 'extend(v:val, {{\"filetype\": getbufvar(v:val.bufnr, \"&filetype\"), \"buftype\": getbufvar(v:val.bufnr, \"&buftype\")}})')", .{filter})
+        else
+            "map(getbufinfo(), 'extend(v:val, {\"filetype\": getbufvar(v:val.bufnr, \"&filetype\"), \"buftype\": getbufvar(v:val.bufnr, \"&buftype\")})')";
+
+        const res = try self.eval(arena, expr);
+        switch (res) {
+            .array => |arr| {
+                const list = try arena.alloc(nvim_types.BufferInfo, arr.len);
+                for (arr, 0..) |item, i| {
+                    switch (item) {
+                        .map => |entries| list[i] = try nvim_types.BufferInfo.fromMsgPack(arena, entries),
+                        else => return error.UnexpectedType,
+                    }
+                }
+                return list;
+            },
+            else => return error.UnexpectedType,
+        }
+    }
+
+    /// Get detailed metadata for a single buffer.
+    pub fn getBufInfo(
+        self: *Nvim,
+        arena: std.mem.Allocator,
+        buf: Buffer,
+    ) !?nvim_types.BufferInfo {
+        const expr = try std.fmt.allocPrint(arena, "map(getbufinfo({d}), 'extend(v:val, {{\"filetype\": getbufvar(v:val.bufnr, \"&filetype\"), \"buftype\": getbufvar(v:val.bufnr, \"&buftype\")}})')", .{buf.handle});
+        const res = try self.eval(arena, expr);
+        switch (res) {
+            .array => |arr| {
+                if (arr.len == 0) return null;
+                switch (arr[0]) {
+                    .map => |entries| return try nvim_types.BufferInfo.fromMsgPack(arena, entries),
+                    else => return error.UnexpectedType,
+                }
+            },
+            else => return error.UnexpectedType,
+        }
+    }
+
     /// Set an optional callback to handle RPC notifications.
     pub fn setNotificationHandler(
         self: *Nvim,

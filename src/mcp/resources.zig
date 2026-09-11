@@ -2,23 +2,21 @@ const std = @import("std");
 const nvim_mod = @import("../nvim.zig");
 const Nvim = nvim_mod.Nvim;
 const api = @import("../api.zig");
+const nvim_types = @import("../nvim_types.zig");
 const types = @import("types.zig");
 
 pub const ResourceReadResult = struct {
     contents: []const types.ResourceContent,
 };
 
-pub const BufferInfo = struct {
-    id: i64,
-    name: []const u8,
-};
+pub const BufferInfo = nvim_types.BufferInfo;
 
 pub fn listResources(arena: std.mem.Allocator) ![]const types.Resource {
     const resources = try arena.alloc(types.Resource, 1);
     resources[0] = .{
         .uri = "neovim://buffers",
         .name = "Open Buffers",
-        .description = "List of currently open Neovim buffers",
+        .description = "List of currently open Neovim buffers with detailed metadata",
         .mimeType = "application/json",
     };
     return resources;
@@ -37,16 +35,7 @@ pub fn readResource(
 }
 
 fn readOpenBuffers(nvim: *Nvim, arena: std.mem.Allocator) !ResourceReadResult {
-    const bufs = try nvim.listBufs(arena);
-    const buf_infos = try arena.alloc(BufferInfo, bufs.len);
-
-    for (bufs, 0..) |buf, i| {
-        const name = api.nvim_buf_get_name(nvim, arena, buf) catch "";
-        buf_infos[i] = .{
-            .id = buf.handle,
-            .name = name,
-        };
-    }
+    const buf_infos = try nvim.listBufInfo(arena, .{});
 
     const json_text = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(buf_infos, .{})});
 

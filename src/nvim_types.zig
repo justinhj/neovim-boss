@@ -1,5 +1,6 @@
 const std = @import("std");
 const msgpack = @import("zig_msgpack");
+const object_util = @import("object_util.zig");
 
 pub const TypeError = error{
     InvalidHandle,
@@ -125,6 +126,89 @@ pub const RemoteObject = union(enum) {
     }
 };
 
+pub const BufferInfo = struct {
+    id: i64,
+    name: []const u8,
+    listed: bool,
+    loaded: bool,
+    modified: bool,
+    hidden: bool,
+    line_count: i64,
+    cursor_line: i64,
+    windows: []const i64,
+    last_used: i64,
+    filetype: []const u8 = "",
+    buftype: []const u8 = "",
+
+    pub fn fromMsgPack(arena: std.mem.Allocator, entries: []const msgpack.MsgPackMapEntry) !BufferInfo {
+        const id = getInt(entries, "bufnr", i64, 0);
+        const name = getString(entries, "name");
+        const listed = getBool(entries, "listed");
+        const loaded = getBool(entries, "loaded");
+        const modified = getBool(entries, "changed");
+        const hidden = getBool(entries, "hidden");
+        const line_count = getInt(entries, "linecount", i64, 0);
+        const cursor_line = getInt(entries, "lnum", i64, 0);
+        const last_used = getInt(entries, "lastused", i64, 0);
+        const filetype = getString(entries, "filetype");
+        const buftype = getString(entries, "buftype");
+
+        var windows: []const i64 = &.{};
+        if (object_util.mapGet(entries, "windows")) |win_obj| {
+            if (object_util.asArray(win_obj)) |win_arr| {
+                const wins = try arena.alloc(i64, win_arr.len);
+                for (win_arr, 0..) |item, i| {
+                    wins[i] = object_util.asInt(item, i64) orelse 0;
+                }
+                windows = wins;
+            }
+        }
+
+        return .{
+            .id = id,
+            .name = name,
+            .listed = listed,
+            .loaded = loaded,
+            .modified = modified,
+            .hidden = hidden,
+            .line_count = line_count,
+            .cursor_line = cursor_line,
+            .windows = windows,
+            .last_used = last_used,
+            .filetype = filetype,
+            .buftype = buftype,
+        };
+    }
+};
+
+fn getBool(entries: []const msgpack.MsgPackMapEntry, key: []const u8) bool {
+    if (object_util.mapGet(entries, key)) |val| {
+        if (object_util.asBool(val)) |b| return b;
+        if (object_util.asInt(val, i64)) |i| return i != 0;
+    }
+    return false;
+}
+
+fn getInt(entries: []const msgpack.MsgPackMapEntry, key: []const u8, comptime T: type, default: T) T {
+    if (object_util.mapGet(entries, key)) |val| {
+        if (object_util.asInt(val, T)) |i| return i;
+    }
+    return default;
+}
+
+fn getString(entries: []const msgpack.MsgPackMapEntry, key: []const u8) []const u8 {
+    if (object_util.mapGet(entries, key)) |val| {
+        if (object_util.asString(val)) |s| return s;
+    }
+    return "";
+}
+
+pub const ListBufInfoOptions = struct {
+    buflisted: ?bool = null,
+    bufloaded: ?bool = null,
+    bufmodified: ?bool = null,
+};
+
 // --------------------------------------------------------------------------
 // Unit Tests
 // --------------------------------------------------------------------------
@@ -165,4 +249,49 @@ test "nvim_types: buffer, window, tabpage decode and encode" {
     const obj = try RemoteObject.fromExtension(buf_ext, types);
     try std.testing.expect(obj == .buffer);
     try std.testing.expectEqual(@as(i64, 1), obj.buffer.handle);
+}
+
+test "nvim_types: BufferInfo fromMsgPack" {
+    const allocator = std.testing.allocator;
+
+    var name_storage = "src/main.zig".*;
+    var ft_storage = "zig".*;
+    var bt_storage = "".*;
+
+    var win_items = [_]msgpack.MsgPackObject{
+        .{ .integer = 1000 },
+        .{ .integer = 1001 },
+    };
+
+    const entries = [_]msgpack.MsgPackMapEntry{
+        .{ .key = .{ .string = @constCast("bufnr") }, .value = .{ .integer = 42 } },
+        .{ .key = .{ .string = @constCast("name") }, .value = .{ .string = &name_storage } },
+        .{ .key = .{ .string = @constCast("listed") }, .value = .{ .integer = 1 } },
+        .{ .key = .{ .string = @constCast("loaded") }, .value = .{ .integer = 1 } },
+        .{ .key = .{ .string = @constCast("changed") }, .value = .{ .integer = 0 } },
+        .{ .key = .{ .string = @constCast("hidden") }, .value = .{ .integer = 0 } },
+        .{ .key = .{ .string = @constCast("linecount") }, .value = .{ .integer = 120 } },
+        .{ .key = .{ .string = @constCast("lnum") }, .value = .{ .integer = 15 } },
+        .{ .key = .{ .string = @constCast("lastused") }, .value = .{ .integer = 1726000000 } },
+        .{ .key = .{ .string = @constCast("windows") }, .value = .{ .array = &win_items } },
+        .{ .key = .{ .string = @constCast("filetype") }, .value = .{ .string = &ft_storage } },
+        .{ .key = .{ .string = @constCast("buftype") }, .value = .{ .string = &bt_storage } },
+    };
+
+    const info = try BufferInfo.fromMsgPack(allocator, &entries);
+    try std.testing.expectEqual(@as(i64, 42), info.id);
+    try std.testing.expectEqualStrings("src/main.zig", info.name);
+    try std.testing.expect(info.listed);
+    try std.testing.expect(info.loaded);
+    try std.testing.expect(!info.modified);
+    try std.testing.expect(!info.hidden);
+    try std.testing.expectEqual(@as(i64, 120), info.line_count);
+    try std.testing.expectEqual(@as(i64, 15), info.cursor_line);
+    try std.testing.expectEqual(@as(i64, 1726000000), info.last_used);
+    try std.testing.expectEqual(@as(usize, 2), info.windows.len);
+    try std.testing.expectEqual(@as(i64, 1000), info.windows[0]);
+    try std.testing.expectEqual(@as(i64, 1001), info.windows[1]);
+    try std.testing.expectEqualStrings("zig", info.filetype);
+    try std.testing.expectEqualStrings("", info.buftype);
+    allocator.free(info.windows);
 }

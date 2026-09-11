@@ -19,6 +19,8 @@ pub const nvim_types = @import("nvim_types.zig");
 pub const Buffer = nvim_types.Buffer;
 pub const Window = nvim_types.Window;
 pub const Tabpage = nvim_types.Tabpage;
+pub const BufferInfo = nvim_types.BufferInfo;
+pub const ListBufInfoOptions = nvim_types.ListBufInfoOptions;
 pub const ExtTypes = nvim_types.ExtTypes;
 pub const RemoteObject = nvim_types.RemoteObject;
 
