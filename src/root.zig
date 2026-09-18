@@ -303,12 +303,10 @@ test "mcp: list tools and resources" {
     const alloc = arena.allocator();
 
     const tool_list = try mcp.tools.listTools(alloc);
-    try std.testing.expectEqual(@as(usize, 5), tool_list.len);
-    try std.testing.expectEqualStrings("eval_vimscript", tool_list[0].name);
-    try std.testing.expectEqualStrings("exec_lua", tool_list[1].name);
-    try std.testing.expectEqualStrings("send_command", tool_list[2].name);
-    try std.testing.expectEqualStrings("send_keys", tool_list[3].name);
-    try std.testing.expectEqualStrings("call_function", tool_list[4].name);
+    try std.testing.expectEqual(@as(usize, 3), tool_list.len);
+    try std.testing.expectEqualStrings("exec_lua", tool_list[0].name);
+    try std.testing.expectEqualStrings("send_command", tool_list[1].name);
+    try std.testing.expectEqualStrings("send_keys", tool_list[2].name);
 
     const res_list = try mcp.resources.listResources(alloc);
     try std.testing.expectEqual(@as(usize, 1), res_list.len);
@@ -347,7 +345,7 @@ test "mcp: jsonToMsgPack conversion" {
     try std.testing.expectEqualStrings("two", arr_res.array[1].string);
 }
 
-test "mcp: tool call eval_vimscript with embedded child nvim" {
+test "mcp: unknown tool returns error" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
@@ -358,19 +356,9 @@ test "mcp: tool call eval_vimscript with embedded child nvim" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Valid eval
-    var args_map: std.json.ObjectMap = .empty;
-    try args_map.put(alloc, "expr", .{ .string = "6 * 7" });
-    const res = try mcp.tools.callTool(&n_instance, alloc, "eval_vimscript", .{ .object = args_map });
-    try std.testing.expectEqual(false, res.isError);
-    try std.testing.expectEqual(@as(usize, 1), res.content.len);
-    try std.testing.expectEqualStrings("42", res.content[0].text);
-
-    // Invalid syntax eval
-    var bad_args: std.json.ObjectMap = .empty;
-    try bad_args.put(alloc, "expr", .{ .string = "syntax error (((" });
-    const err_res = try mcp.tools.callTool(&n_instance, alloc, "eval_vimscript", .{ .object = bad_args });
-    try std.testing.expectEqual(true, err_res.isError);
+    const res = try mcp.tools.callTool(&n_instance, alloc, "eval_vimscript", null);
+    try std.testing.expectEqual(true, res.isError);
+    try std.testing.expectEqualStrings("Unknown tool: eval_vimscript", res.content[0].text);
 }
 
 test "mcp: tool call exec_lua with embedded child nvim" {
@@ -490,44 +478,6 @@ test "mcp: tool call send_keys with embedded child nvim" {
     } else {
         return error.UnexpectedType;
     }
-}
-
-test "mcp: tool call call_function with embedded child nvim" {
-    const allocator = std.testing.allocator;
-    const io = std.testing.io;
-
-    var n_instance = try attach(allocator, io, .{ .child = null });
-    defer n_instance.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    // 1. Built-in math function: abs(-42)
-    var args1: std.json.ObjectMap = .empty;
-    try args1.put(alloc, "function_name", .{ .string = "abs" });
-    var fn_params1 = std.json.Array.init(alloc);
-    try fn_params1.append(.{ .integer = -42 });
-    try args1.put(alloc, "args", .{ .array = fn_params1 });
-    const res1 = try mcp.tools.callTool(&n_instance, alloc, "call_function", .{ .object = args1 });
-    try std.testing.expectEqual(false, res1.isError);
-    try std.testing.expectEqualStrings("42", res1.content[0].text);
-
-    // 2. Built-in string function: tolower("NEOVIM")
-    var args2: std.json.ObjectMap = .empty;
-    try args2.put(alloc, "function_name", .{ .string = "tolower" });
-    var fn_params2 = std.json.Array.init(alloc);
-    try fn_params2.append(.{ .string = "NEOVIM" });
-    try args2.put(alloc, "args", .{ .array = fn_params2 });
-    const res2 = try mcp.tools.callTool(&n_instance, alloc, "call_function", .{ .object = args2 });
-    try std.testing.expectEqual(false, res2.isError);
-    try std.testing.expectEqualStrings("\"neovim\"", res2.content[0].text);
-
-    // 3. Error on invalid function
-    var bad_fn: std.json.ObjectMap = .empty;
-    try bad_fn.put(alloc, "function_name", .{ .string = "totally_nonexistent_function_12345" });
-    const err_res = try mcp.tools.callTool(&n_instance, alloc, "call_function", .{ .object = bad_fn });
-    try std.testing.expectEqual(true, err_res.isError);
 }
 
 test "mcp: resource read neovim://buffers with embedded child nvim" {
