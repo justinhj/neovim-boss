@@ -303,12 +303,48 @@ test "mcp: list tools and resources" {
     const alloc = arena.allocator();
 
     const tool_list = try mcp.tools.listTools(alloc);
-    try std.testing.expectEqual(@as(usize, 1), tool_list.len);
+    try std.testing.expectEqual(@as(usize, 5), tool_list.len);
     try std.testing.expectEqualStrings("eval_vimscript", tool_list[0].name);
+    try std.testing.expectEqualStrings("exec_lua", tool_list[1].name);
+    try std.testing.expectEqualStrings("send_command", tool_list[2].name);
+    try std.testing.expectEqualStrings("send_keys", tool_list[3].name);
+    try std.testing.expectEqualStrings("call_function", tool_list[4].name);
 
     const res_list = try mcp.resources.listResources(alloc);
     try std.testing.expectEqual(@as(usize, 1), res_list.len);
     try std.testing.expectEqualStrings("neovim://buffers", res_list[0].uri);
+}
+
+test "mcp: jsonToMsgPack conversion" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // 1. null
+    const null_res = try mcp.tools.jsonToMsgPack(alloc, .{ .null = {} });
+    try std.testing.expect(null_res == .nil);
+
+    // 2. bool
+    const bool_res = try mcp.tools.jsonToMsgPack(alloc, .{ .bool = true });
+    try std.testing.expect(bool_res == .boolean and bool_res.boolean == true);
+
+    // 3. int
+    const int_res = try mcp.tools.jsonToMsgPack(alloc, .{ .integer = 42 });
+    try std.testing.expect(int_res == .integer and int_res.integer == 42);
+
+    // 4. string
+    const str_res = try mcp.tools.jsonToMsgPack(alloc, .{ .string = "neovim" });
+    try std.testing.expect(str_res == .string and std.mem.eql(u8, str_res.string, "neovim"));
+
+    // 5. array
+    var json_arr = std.json.Array.init(alloc);
+    try json_arr.append(.{ .integer = 1 });
+    try json_arr.append(.{ .string = "two" });
+    const arr_res = try mcp.tools.jsonToMsgPack(alloc, .{ .array = json_arr });
+    try std.testing.expect(arr_res == .array and arr_res.array.len == 2);
+    try std.testing.expectEqual(@as(i64, 1), arr_res.array[0].integer);
+    try std.testing.expectEqualStrings("two", arr_res.array[1].string);
 }
 
 test "mcp: tool call eval_vimscript with embedded child nvim" {
@@ -334,6 +370,163 @@ test "mcp: tool call eval_vimscript with embedded child nvim" {
     var bad_args: std.json.ObjectMap = .empty;
     try bad_args.put(alloc, "expr", .{ .string = "syntax error (((" });
     const err_res = try mcp.tools.callTool(&n_instance, alloc, "eval_vimscript", .{ .object = bad_args });
+    try std.testing.expectEqual(true, err_res.isError);
+}
+
+test "mcp: tool call exec_lua with embedded child nvim" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var n_instance = try attach(allocator, io, .{ .child = null });
+    defer n_instance.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // 1. Simple arithmetic
+    var args1: std.json.ObjectMap = .empty;
+    try args1.put(alloc, "code", .{ .string = "return 10 + 20" });
+    const res1 = try mcp.tools.callTool(&n_instance, alloc, "exec_lua", .{ .object = args1 });
+    try std.testing.expectEqual(false, res1.isError);
+    try std.testing.expectEqualStrings("30", res1.content[0].text);
+
+    // 2. Table return
+    var args2: std.json.ObjectMap = .empty;
+    try args2.put(alloc, "code", .{ .string = "return { name = 'nb', count = 3 }" });
+    const res2 = try mcp.tools.callTool(&n_instance, alloc, "exec_lua", .{ .object = args2 });
+    try std.testing.expectEqual(false, res2.isError);
+    try std.testing.expect(std.mem.indexOf(u8, res2.content[0].text, "\"name\":\"nb\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res2.content[0].text, "\"count\":3") != null);
+
+    // 3. Arguments forwarding
+    var args3: std.json.ObjectMap = .empty;
+    try args3.put(alloc, "code", .{ .string = "local a, b = ...; return a * b" });
+    var lua_params = std.json.Array.init(alloc);
+    try lua_params.append(.{ .integer = 6 });
+    try lua_params.append(.{ .integer = 7 });
+    try args3.put(alloc, "args", .{ .array = lua_params });
+    const res3 = try mcp.tools.callTool(&n_instance, alloc, "exec_lua", .{ .object = args3 });
+    try std.testing.expectEqual(false, res3.isError);
+    try std.testing.expectEqualStrings("42", res3.content[0].text);
+
+    // 4. Alias eval_lua with expression
+    var args4: std.json.ObjectMap = .empty;
+    try args4.put(alloc, "code", .{ .string = "50 + 50" });
+    const res4 = try mcp.tools.callTool(&n_instance, alloc, "eval_lua", .{ .object = args4 });
+    try std.testing.expectEqual(false, res4.isError);
+    try std.testing.expectEqualStrings("100", res4.content[0].text);
+
+    // 5. Error handling
+    var bad_lua: std.json.ObjectMap = .empty;
+    try bad_lua.put(alloc, "code", .{ .string = "error('boom')" });
+    const err_res = try mcp.tools.callTool(&n_instance, alloc, "exec_lua", .{ .object = bad_lua });
+    try std.testing.expectEqual(true, err_res.isError);
+}
+
+test "mcp: tool call send_command with embedded child nvim" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var n_instance = try attach(allocator, io, .{ .child = null });
+    defer n_instance.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // 1. Output capture
+    var args1: std.json.ObjectMap = .empty;
+    try args1.put(alloc, "command", .{ .string = "echo 'hello nb'" });
+    const res1 = try mcp.tools.callTool(&n_instance, alloc, "send_command", .{ .object = args1 });
+    try std.testing.expectEqual(false, res1.isError);
+    try std.testing.expectEqualStrings("hello nb", res1.content[0].text);
+
+    // 2. Silent command
+    var args2: std.json.ObjectMap = .empty;
+    try args2.put(alloc, "command", .{ .string = ":set number" });
+    const res2 = try mcp.tools.callTool(&n_instance, alloc, "send_command", .{ .object = args2 });
+    try std.testing.expectEqual(false, res2.isError);
+    try std.testing.expectEqualStrings("(no output)", res2.content[0].text);
+
+    // 3. Alias exec_command
+    var args3: std.json.ObjectMap = .empty;
+    try args3.put(alloc, "command", .{ .string = "echo 99" });
+    const res3 = try mcp.tools.callTool(&n_instance, alloc, "exec_command", .{ .object = args3 });
+    try std.testing.expectEqual(false, res3.isError);
+    try std.testing.expectEqualStrings("99", res3.content[0].text);
+
+    // 4. Invalid command
+    var bad_cmd: std.json.ObjectMap = .empty;
+    try bad_cmd.put(alloc, "command", .{ .string = "nonexistent_command_xyz" });
+    const err_res = try mcp.tools.callTool(&n_instance, alloc, "send_command", .{ .object = bad_cmd });
+    try std.testing.expectEqual(true, err_res.isError);
+}
+
+test "mcp: tool call send_keys with embedded child nvim" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var n_instance = try attach(allocator, io, .{ .child = null });
+    defer n_instance.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Send keys: insert text into current buffer and return to normal mode
+    var args: std.json.ObjectMap = .empty;
+    try args.put(alloc, "keys", .{ .string = "iHello from send_keys<Esc>" });
+    const res = try mcp.tools.callTool(&n_instance, alloc, "send_keys", .{ .object = args });
+    try std.testing.expectEqual(false, res.isError);
+    try std.testing.expect(std.mem.indexOf(u8, res.content[0].text, "\"bytes_written\":") != null);
+
+    // Read back buffer line to verify keys took effect
+    const buf = try api.nvim_get_current_buf(&n_instance, alloc);
+    const lines = try buf.getLines(&n_instance, alloc, 0, 1, false);
+    try std.testing.expectEqual(@as(usize, 1), lines.len);
+    if (object_util.asString(lines[0])) |line_str| {
+        try std.testing.expectEqualStrings("Hello from send_keys", line_str);
+    } else {
+        return error.UnexpectedType;
+    }
+}
+
+test "mcp: tool call call_function with embedded child nvim" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var n_instance = try attach(allocator, io, .{ .child = null });
+    defer n_instance.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // 1. Built-in math function: abs(-42)
+    var args1: std.json.ObjectMap = .empty;
+    try args1.put(alloc, "function_name", .{ .string = "abs" });
+    var fn_params1 = std.json.Array.init(alloc);
+    try fn_params1.append(.{ .integer = -42 });
+    try args1.put(alloc, "args", .{ .array = fn_params1 });
+    const res1 = try mcp.tools.callTool(&n_instance, alloc, "call_function", .{ .object = args1 });
+    try std.testing.expectEqual(false, res1.isError);
+    try std.testing.expectEqualStrings("42", res1.content[0].text);
+
+    // 2. Built-in string function: tolower("NEOVIM")
+    var args2: std.json.ObjectMap = .empty;
+    try args2.put(alloc, "function_name", .{ .string = "tolower" });
+    var fn_params2 = std.json.Array.init(alloc);
+    try fn_params2.append(.{ .string = "NEOVIM" });
+    try args2.put(alloc, "args", .{ .array = fn_params2 });
+    const res2 = try mcp.tools.callTool(&n_instance, alloc, "call_function", .{ .object = args2 });
+    try std.testing.expectEqual(false, res2.isError);
+    try std.testing.expectEqualStrings("\"neovim\"", res2.content[0].text);
+
+    // 3. Error on invalid function
+    var bad_fn: std.json.ObjectMap = .empty;
+    try bad_fn.put(alloc, "function_name", .{ .string = "totally_nonexistent_function_12345" });
+    const err_res = try mcp.tools.callTool(&n_instance, alloc, "call_function", .{ .object = bad_fn });
     try std.testing.expectEqual(true, err_res.isError);
 }
 

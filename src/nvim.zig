@@ -138,6 +138,80 @@ pub const Nvim = struct {
         _ = try self.client.request(arena, "nvim_command", &params);
     }
 
+    /// Execute Vimscript code/commands and optionally capture output using nvim_exec2.
+    pub fn exec2(
+        self: *Nvim,
+        arena: std.mem.Allocator,
+        src: []const u8,
+        opts: []const MsgPackMapEntry,
+    ) ![]MsgPackMapEntry {
+        const src_mut = try arena.dupe(u8, src);
+        const opts_mut = try arena.dupe(MsgPackMapEntry, opts);
+        const params = [_]MsgPackObject{
+            .{ .string = src_mut },
+            .{ .map = opts_mut },
+        };
+        const res = try self.client.request(arena, "nvim_exec2", &params);
+        return switch (res) {
+            .map => |entries| try arena.dupe(MsgPackMapEntry, entries),
+            else => error.UnexpectedType,
+        };
+    }
+
+    /// Execute a Vimscript command and capture its output via nvim_exec2.
+    pub fn commandOutput(self: *Nvim, arena: std.mem.Allocator, cmd: []const u8) ![]const u8 {
+        var output_key = "output".*;
+        const opts = [_]MsgPackMapEntry{
+            .{
+                .key = .{ .string = &output_key },
+                .value = .{ .boolean = true },
+            },
+        };
+        const entries = try self.exec2(arena, cmd, &opts);
+        if (object_util.mapGet(entries, "output")) |val| {
+            if (object_util.asString(val)) |s| return s;
+        }
+        return "";
+    }
+
+    /// Send raw keystrokes to Neovim via nvim_input.
+    pub fn input(self: *Nvim, arena: std.mem.Allocator, keys: []const u8) !i64 {
+        const keys_mut = try arena.dupe(u8, keys);
+        const params = [_]MsgPackObject{
+            .{ .string = keys_mut },
+        };
+        const res = try self.client.request(arena, "nvim_input", &params);
+        return switch (res) {
+            .integer => |i| i,
+            .unsigned_integer => |u| @intCast(u),
+            else => error.UnexpectedType,
+        };
+    }
+
+    /// Replace terminal codes in a key sequence (e.g. "<CR>", "<Esc>") using nvim_replace_termcodes.
+    pub fn replaceTermcodes(
+        self: *Nvim,
+        arena: std.mem.Allocator,
+        str: []const u8,
+        from_part: bool,
+        do_lt: bool,
+        special: bool,
+    ) ![]const u8 {
+        const str_mut = try arena.dupe(u8, str);
+        const params = [_]MsgPackObject{
+            .{ .string = str_mut },
+            .{ .boolean = from_part },
+            .{ .boolean = do_lt },
+            .{ .boolean = special },
+        };
+        const res = try self.client.request(arena, "nvim_replace_termcodes", &params);
+        return switch (res) {
+            .string => |s| try arena.dupe(u8, s),
+            .binary => |b| try arena.dupe(u8, b),
+            else => error.UnexpectedType,
+        };
+    }
+
     /// Evaluate a Vimscript expression.
     pub fn eval(self: *Nvim, arena: std.mem.Allocator, expr: []const u8) !MsgPackObject {
         const expr_mut = try arena.dupe(u8, expr);

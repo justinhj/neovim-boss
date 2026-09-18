@@ -68,8 +68,65 @@ pub fn msgPackToJsonString(arena: std.mem.Allocator, obj: MsgPackObject) ![]cons
     return try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(json_val, .{})});
 }
 
+/// Convert a std.json.Value to a MsgPackObject allocated from arena.
+pub fn jsonToMsgPack(arena: std.mem.Allocator, val: std.json.Value) anyerror!MsgPackObject {
+    switch (val) {
+        .null => return .nil,
+        .bool => |b| return .{ .boolean = b },
+        .integer => |i| return .{ .integer = i },
+        .float => |f| return .{ .float64 = f },
+        .number_string => |s| {
+            if (std.fmt.parseInt(i64, s, 10)) |i| {
+                return .{ .integer = i };
+            } else |_| {}
+            if (std.fmt.parseFloat(f64, s)) |f| {
+                return .{ .float64 = f };
+            } else |_| {}
+            return .{ .string = try arena.dupe(u8, s) };
+        },
+        .string => |s| return .{ .string = try arena.dupe(u8, s) },
+        .array => |arr| {
+            const items = try arena.alloc(MsgPackObject, arr.items.len);
+            for (arr.items, 0..) |item, i| {
+                items[i] = try jsonToMsgPack(arena, item);
+            }
+            return .{ .array = items };
+        },
+        .object => |obj| {
+            const entries = try arena.alloc(MsgPackMapEntry, obj.count());
+            var i: usize = 0;
+            var iter = obj.iterator();
+            while (iter.next()) |entry| : (i += 1) {
+                entries[i] = .{
+                    .key = .{ .string = try arena.dupe(u8, entry.key_ptr.*) },
+                    .value = try jsonToMsgPack(arena, entry.value_ptr.*),
+                };
+            }
+            return .{ .map = entries };
+        },
+    }
+}
+
+fn makeErrorResult(arena: std.mem.Allocator, message: []const u8) !ToolCallResult {
+    const items = try arena.alloc(types.TextContent, 1);
+    items[0] = .{ .text = try arena.dupe(u8, message) };
+    return .{
+        .content = items,
+        .isError = true,
+    };
+}
+
+fn makeSuccessResult(arena: std.mem.Allocator, text: []const u8) !ToolCallResult {
+    const items = try arena.alloc(types.TextContent, 1);
+    items[0] = .{ .text = try arena.dupe(u8, text) };
+    return .{
+        .content = items,
+        .isError = false,
+    };
+}
+
 pub fn listTools(arena: std.mem.Allocator) ![]const types.Tool {
-    const schema_json =
+    const eval_vimscript_schema =
         \\{
         \\  "type": "object",
         \\  "properties": {
@@ -82,13 +139,105 @@ pub fn listTools(arena: std.mem.Allocator) ![]const types.Tool {
         \\}
     ;
 
-    const parsed_schema = try std.json.parseFromSlice(std.json.Value, arena, schema_json, .{});
+    const exec_lua_schema =
+        \\{
+        \\  "type": "object",
+        \\  "properties": {
+        \\    "code": {
+        \\      "type": "string",
+        \\      "description": "Lua code to execute in Neovim's Lua runtime"
+        \\    },
+        \\    "args": {
+        \\      "type": "array",
+        \\      "description": "Optional arguments passed to the Lua code chunk, accessible as '...'"
+        \\    }
+        \\  },
+        \\  "required": ["code"]
+        \\}
+    ;
 
-    const tools = try arena.alloc(types.Tool, 1);
+    const send_command_schema =
+        \\{
+        \\  "type": "object",
+        \\  "properties": {
+        \\    "command": {
+        \\      "type": "string",
+        \\      "description": "The Vim Ex command to execute (leading ':' is optional)"
+        \\    },
+        \\    "output": {
+        \\      "type": "boolean",
+        \\      "description": "Whether to capture and return command output. Defaults to true."
+        \\    }
+        \\  },
+        \\  "required": ["command"]
+        \\}
+    ;
+
+    const send_keys_schema =
+        \\{
+        \\  "type": "object",
+        \\  "properties": {
+        \\    "keys": {
+        \\      "type": "string",
+        \\      "description": "Keystrokes to send to Neovim. Vim key notation is supported (e.g. '<Esc>', '<CR>', '<Tab>', '<C-w>v')"
+        \\    },
+        \\    "escape": {
+        \\      "type": "boolean",
+        \\      "description": "Whether to prepend '<Esc>' so execution begins in normal mode. Defaults to true."
+        \\    }
+        \\  },
+        \\  "required": ["keys"]
+        \\}
+    ;
+
+    const call_function_schema =
+        \\{
+        \\  "type": "object",
+        \\  "properties": {
+        \\    "function_name": {
+        \\      "type": "string",
+        \\      "description": "Vim/Neovim function name to invoke (e.g. 'abs', 'tolower', 'getbufinfo')"
+        \\    },
+        \\    "args": {
+        \\      "type": "array",
+        \\      "description": "Arguments to pass to the function"
+        \\    }
+        \\  },
+        \\  "required": ["function_name"]
+        \\}
+    ;
+
+    const parsed_eval_vimscript = try std.json.parseFromSlice(std.json.Value, arena, eval_vimscript_schema, .{});
+    const parsed_exec_lua = try std.json.parseFromSlice(std.json.Value, arena, exec_lua_schema, .{});
+    const parsed_send_command = try std.json.parseFromSlice(std.json.Value, arena, send_command_schema, .{});
+    const parsed_send_keys = try std.json.parseFromSlice(std.json.Value, arena, send_keys_schema, .{});
+    const parsed_call_function = try std.json.parseFromSlice(std.json.Value, arena, call_function_schema, .{});
+
+    const tools = try arena.alloc(types.Tool, 5);
     tools[0] = .{
         .name = "eval_vimscript",
         .description = "Evaluate a Vimscript expression in the connected Neovim instance",
-        .inputSchema = parsed_schema.value,
+        .inputSchema = parsed_eval_vimscript.value,
+    };
+    tools[1] = .{
+        .name = "exec_lua",
+        .description = "Execute arbitrary Lua code in Neovim's Lua runtime and return the result",
+        .inputSchema = parsed_exec_lua.value,
+    };
+    tools[2] = .{
+        .name = "send_command",
+        .description = "Execute a Vim Ex command and capture its output",
+        .inputSchema = parsed_send_command.value,
+    };
+    tools[3] = .{
+        .name = "send_keys",
+        .description = "Send keystrokes to Neovim as if typed by the user",
+        .inputSchema = parsed_send_keys.value,
+    };
+    tools[4] = .{
+        .name = "call_function",
+        .description = "Call a Vimscript or Neovim function by name with structured arguments",
+        .inputSchema = parsed_call_function.value,
     };
     return tools;
 }
@@ -101,15 +250,18 @@ pub fn callTool(
 ) !ToolCallResult {
     if (std.mem.eql(u8, name, "eval_vimscript")) {
         return executeEvalVimscript(nvim, arena, arguments);
+    } else if (std.mem.eql(u8, name, "exec_lua") or std.mem.eql(u8, name, "eval_lua")) {
+        return executeExecLua(nvim, arena, name, arguments);
+    } else if (std.mem.eql(u8, name, "send_command") or std.mem.eql(u8, name, "exec_command") or std.mem.eql(u8, name, "vim_command")) {
+        return executeSendCommand(nvim, arena, arguments);
+    } else if (std.mem.eql(u8, name, "send_keys")) {
+        return executeSendKeys(nvim, arena, arguments);
+    } else if (std.mem.eql(u8, name, "call_function")) {
+        return executeCallFunction(nvim, arena, arguments);
     }
 
     const err_text = try std.fmt.allocPrint(arena, "Unknown tool: {s}", .{name});
-    const items = try arena.alloc(types.TextContent, 1);
-    items[0] = .{ .text = err_text };
-    return .{
-        .content = items,
-        .isError = true,
-    };
+    return makeErrorResult(arena, err_text);
 }
 
 fn executeEvalVimscript(
@@ -118,44 +270,236 @@ fn executeEvalVimscript(
     arguments: ?std.json.Value,
 ) !ToolCallResult {
     const args = arguments orelse {
-        const items = try arena.alloc(types.TextContent, 1);
-        items[0] = .{ .text = "Missing arguments: expected an object containing 'expr'" };
-        return .{ .content = items, .isError = true };
+        return makeErrorResult(arena, "Missing arguments: expected an object containing 'expr'");
     };
 
     if (args != .object) {
-        const items = try arena.alloc(types.TextContent, 1);
-        items[0] = .{ .text = "Invalid arguments: expected a JSON object" };
-        return .{ .content = items, .isError = true };
+        return makeErrorResult(arena, "Invalid arguments: expected a JSON object");
     }
 
     const expr_val = args.object.get("expr") orelse {
-        const items = try arena.alloc(types.TextContent, 1);
-        items[0] = .{ .text = "Missing required argument 'expr'" };
-        return .{ .content = items, .isError = true };
+        return makeErrorResult(arena, "Missing required argument 'expr'");
     };
 
     if (expr_val != .string) {
-        const items = try arena.alloc(types.TextContent, 1);
-        items[0] = .{ .text = "Argument 'expr' must be a string" };
-        return .{ .content = items, .isError = true };
+        return makeErrorResult(arena, "Argument 'expr' must be a string");
     }
 
     const expr = expr_val.string;
 
-    // Call nvim.eval
     const eval_res = nvim.eval(arena, expr) catch |err| {
         const err_text = try std.fmt.allocPrint(arena, "Failed to evaluate Vimscript: {s}", .{@errorName(err)});
-        const items = try arena.alloc(types.TextContent, 1);
-        items[0] = .{ .text = err_text };
-        return .{ .content = items, .isError = true };
+        return makeErrorResult(arena, err_text);
     };
 
     const json_str = try msgPackToJsonString(arena, eval_res);
-    const items = try arena.alloc(types.TextContent, 1);
-    items[0] = .{ .text = json_str };
-    return .{
-        .content = items,
-        .isError = false,
+    return makeSuccessResult(arena, json_str);
+}
+
+fn executeExecLua(
+    nvim: *Nvim,
+    arena: std.mem.Allocator,
+    tool_name: []const u8,
+    arguments: ?std.json.Value,
+) !ToolCallResult {
+    const args = arguments orelse {
+        return makeErrorResult(arena, "Missing arguments: expected an object containing 'code'");
     };
+
+    if (args != .object) {
+        return makeErrorResult(arena, "Invalid arguments: expected a JSON object");
+    }
+
+    const code_val = args.object.get("code") orelse {
+        return makeErrorResult(arena, "Missing required argument 'code'");
+    };
+
+    if (code_val != .string) {
+        return makeErrorResult(arena, "Argument 'code' must be a string");
+    }
+
+    var code = code_val.string;
+    // If called via alias eval_lua and code doesn't start with "return ", prepend "return (" ... ")"
+    if (std.mem.eql(u8, tool_name, "eval_lua")) {
+        const trimmed = std.mem.trim(u8, code, " \r\n\t");
+        if (!std.mem.startsWith(u8, trimmed, "return ") and !std.mem.containsAtLeast(u8, trimmed, 1, "\n")) {
+            code = try std.fmt.allocPrint(arena, "return ({s})", .{trimmed});
+        }
+    }
+
+    var lua_args: []const MsgPackObject = &.{};
+    if (args.object.get("args")) |passed_args| {
+        switch (passed_args) {
+            .array => |arr| {
+                const converted = try arena.alloc(MsgPackObject, arr.items.len);
+                for (arr.items, 0..) |item, i| {
+                    converted[i] = try jsonToMsgPack(arena, item);
+                }
+                lua_args = converted;
+            },
+            .null => {},
+            else => return makeErrorResult(arena, "Argument 'args' must be a JSON array"),
+        }
+    }
+
+    const res = nvim.execLua(arena, code, lua_args) catch |err| {
+        const err_text = try std.fmt.allocPrint(arena, "Failed to execute Lua code: {s}", .{@errorName(err)});
+        return makeErrorResult(arena, err_text);
+    };
+
+    const json_str = try msgPackToJsonString(arena, res);
+    return makeSuccessResult(arena, json_str);
+}
+
+fn executeSendCommand(
+    nvim: *Nvim,
+    arena: std.mem.Allocator,
+    arguments: ?std.json.Value,
+) !ToolCallResult {
+    const args = arguments orelse {
+        return makeErrorResult(arena, "Missing arguments: expected an object containing 'command'");
+    };
+
+    if (args != .object) {
+        return makeErrorResult(arena, "Invalid arguments: expected a JSON object");
+    }
+
+    const cmd_val = args.object.get("command") orelse {
+        return makeErrorResult(arena, "Missing required argument 'command'");
+    };
+
+    if (cmd_val != .string) {
+        return makeErrorResult(arena, "Argument 'command' must be a string");
+    }
+
+    var cmd = std.mem.trim(u8, cmd_val.string, " \r\n\t");
+    if (cmd.len > 0 and cmd[0] == ':') {
+        cmd = cmd[1..];
+    }
+
+    var capture_output = true;
+    if (args.object.get("output")) |out_val| {
+        if (out_val == .bool) {
+            capture_output = out_val.bool;
+        }
+    }
+
+    if (capture_output) {
+        const out = nvim.commandOutput(arena, cmd) catch |err| {
+            const err_text = try std.fmt.allocPrint(arena, "Command execution failed: {s}", .{@errorName(err)});
+            return makeErrorResult(arena, err_text);
+        };
+        const trimmed = std.mem.trim(u8, out, " \r\n\t");
+        const final_text = if (trimmed.len > 0) trimmed else "(no output)";
+        return makeSuccessResult(arena, final_text);
+    } else {
+        nvim.command(arena, cmd) catch |err| {
+            const err_text = try std.fmt.allocPrint(arena, "Command execution failed: {s}", .{@errorName(err)});
+            return makeErrorResult(arena, err_text);
+        };
+        return makeSuccessResult(arena, "(command executed)");
+    }
+}
+
+fn executeSendKeys(
+    nvim: *Nvim,
+    arena: std.mem.Allocator,
+    arguments: ?std.json.Value,
+) !ToolCallResult {
+    const args = arguments orelse {
+        return makeErrorResult(arena, "Missing arguments: expected an object containing 'keys'");
+    };
+
+    if (args != .object) {
+        return makeErrorResult(arena, "Invalid arguments: expected a JSON object");
+    }
+
+    const keys_val = args.object.get("keys") orelse {
+        return makeErrorResult(arena, "Missing required argument 'keys'");
+    };
+
+    if (keys_val != .string) {
+        return makeErrorResult(arena, "Argument 'keys' must be a string");
+    }
+
+    const raw_keys = keys_val.string;
+
+    var escape = true;
+    if (args.object.get("escape")) |esc_val| {
+        if (esc_val == .bool) {
+            escape = esc_val.bool;
+        }
+    }
+
+    const full_keys = if (escape and !std.mem.startsWith(u8, raw_keys, "<Esc>") and !std.mem.startsWith(u8, raw_keys, "\x1b"))
+        try std.fmt.allocPrint(arena, "<Esc>{s}", .{raw_keys})
+    else
+        raw_keys;
+
+    // Translate key notation (<CR>, <Esc>, <Tab>, <C-w>, etc.)
+    const translated_keys = nvim.replaceTermcodes(arena, full_keys, true, false, true) catch |err| {
+        const err_text = try std.fmt.allocPrint(arena, "Failed to translate termcodes: {s}", .{@errorName(err)});
+        return makeErrorResult(arena, err_text);
+    };
+
+    const bytes_written = nvim.input(arena, translated_keys) catch |err| {
+        const err_text = try std.fmt.allocPrint(arena, "Failed to send keys: {s}", .{@errorName(err)});
+        return makeErrorResult(arena, err_text);
+    };
+
+    var confirm_map: std.json.ObjectMap = .empty;
+    try confirm_map.put(arena, "sent", .{ .string = full_keys });
+    try confirm_map.put(arena, "bytes_written", .{ .integer = bytes_written });
+
+    const json_text = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(std.json.Value{ .object = confirm_map }, .{})});
+    return makeSuccessResult(arena, json_text);
+}
+
+fn executeCallFunction(
+    nvim: *Nvim,
+    arena: std.mem.Allocator,
+    arguments: ?std.json.Value,
+) !ToolCallResult {
+    const args = arguments orelse {
+        return makeErrorResult(arena, "Missing arguments: expected an object containing 'function_name'");
+    };
+
+    if (args != .object) {
+        return makeErrorResult(arena, "Invalid arguments: expected a JSON object");
+    }
+
+    const fn_val = args.object.get("function_name") orelse
+        args.object.get("function") orelse
+        args.object.get("fn") orelse {
+        return makeErrorResult(arena, "Missing required argument 'function_name'");
+    };
+
+    if (fn_val != .string) {
+        return makeErrorResult(arena, "Argument 'function_name' must be a string");
+    }
+
+    const func_name = fn_val.string;
+
+    var fn_args: []const MsgPackObject = &.{};
+    if (args.object.get("args")) |passed_args| {
+        switch (passed_args) {
+            .array => |arr| {
+                const converted = try arena.alloc(MsgPackObject, arr.items.len);
+                for (arr.items, 0..) |item, i| {
+                    converted[i] = try jsonToMsgPack(arena, item);
+                }
+                fn_args = converted;
+            },
+            .null => {},
+            else => return makeErrorResult(arena, "Argument 'args' must be a JSON array"),
+        }
+    }
+
+    const res = nvim.callFunction(arena, func_name, fn_args) catch |err| {
+        const err_text = try std.fmt.allocPrint(arena, "Failed to call function '{s}': {s}", .{ func_name, @errorName(err) });
+        return makeErrorResult(arena, err_text);
+    };
+
+    const json_str = try msgPackToJsonString(arena, res);
+    return makeSuccessResult(arena, json_str);
 }

@@ -104,6 +104,14 @@ claude mcp add neovim -- /path/to/neovim-boss/zig-out/bin/nb mcp /tmp/nvim.sock
 - **Tools**:
   - `eval_vimscript`: Evaluates any Vimscript expression in the running Neovim instance and returns the JSON-serialized result.
     - Parameter: `expr` (string, required) - Vimscript expression to evaluate.
+  - `exec_lua`: Executes arbitrary Lua code in Neovim's Lua runtime and returns the JSON-serialized result. Supports multi-line blocks and return statements (also accepts `eval_lua` as an alias).
+    - Parameters: `code` (string, required) - Lua code snippet to execute; `args` (array, optional) - Arguments passed to the chunk (`...`).
+  - `send_command`: Executes a Vim Ex command (e.g. `:w`, `:split`, `:edit`, `:set number`) and captures formatted command output. Leading `:` is optional (also accepts `exec_command` and `vim_command` as aliases).
+    - Parameters: `command` (string, required) - Vim command to execute; `output` (boolean, optional, default true) - Whether to capture command output.
+  - `send_keys`: Injects keystrokes into Neovim as if typed by the user. Automatically translates Vim key notations (`<Esc>`, `<CR>`, `<Tab>`, `<C-w>v`) into terminal control codes.
+    - Parameters: `keys` (string, required) - Keystrokes to send; `escape` (boolean, optional, default true) - Prepend `<Esc>` to guarantee normal-mode entry.
+  - `call_function`: Calls any internal Vimscript or Neovim API function by name with structured JSON argument arrays.
+    - Parameters: `function_name` (string, required) - Name of function to invoke (e.g. `abs`, `tolower`, `getbufinfo`); `args` (array, optional) - Arguments to pass.
 - **Resources**:
   - `neovim://buffers`: Returns a JSON array of all open buffers with comprehensive status metadata in a single RPC round-trip:
     - `id`: Buffer number (`bufnr`)
