@@ -13,19 +13,26 @@
 
 A high-performance, robust, and strongly-typed **Neovim API client library and CLI** for [Zig](https://ziglang.org) (v0.16.0+), built on [`justinhj/zig-msgpack`](https://github.com/justinhj/zig-msgpack).
 
-`neovim-boss` provides complete programmatic control over running or embedded Neovim instances via MessagePack-RPC. It is designed both as a standalone library for Zig applications and as the underlying engine for an upcoming **Neovim Model Context Protocol (MCP) server**, allowing AI agents and LLM tools to introspect, query, edit buffers, and interact with your editor in real time.
+`neovim-boss` provides complete programmatic control over running or embedded Neovim instances via MessagePack-RPC. It is designed both as a standalone library for Zig applications and as a native **Neovim Model Context Protocol (MCP) server**, allowing AI agents and LLM tools (such as Claude Desktop, Claude Code, Cursor, and OpenCode) to introspect, query, and interact with your editor in real time.
 
 ---
 
 ## Features
 
+- **Built-in Model Context Protocol (MCP) Server**:
+  - Standards-compliant JSON-RPC 2.0 stdio server implementing the MCP specification.
+  - Exposes tools like `eval_vimscript` to evaluate arbitrary Vimscript expressions and receive structured JSON responses.
+  - Exposes resources like `neovim://buffers` for real-time buffer telemetry with detailed metadata.
+  - Zero external runtimes: compiles to a fast, standalone native binary (`nb`) with instant startup (<1ms).
+- **Fast Single-Round-Trip Buffer Telemetry (`listBufInfo`, `BufferInfo`)**:
+  - Bulk query buffer lists enriched with filetype, buftype, flags (`buflisted`, `bufloaded`, `bufmodified`, `hidden`), associated window IDs, line counts, and cursor positions in a single RPC round-trip.
 - **Multi-Transport Support**:
   - **Unix Domain Sockets**: Connect to running Neovim instances (`nvim --listen /tmp/nvim.sock`).
   - **TCP Sockets**: Connect across local or remote networks (`nvim --listen 127.0.0.1:6666`).
   - **Child Process Embedding**: Automatically spawn and supervise headless child instances (`nvim --embed --headless`).
   - **Standard I/O (`stdio`)**: Run directly as a coprocess or embedded plugin filter.
 - **Smart Connection Auto-Detection**:
-  - `neovim_boss.attachAddress(allocator, io, target)` automatically routes to child, stdio, TCP (`host:port`), or Unix domain socket paths.
+  - `neovim_boss.attachAddress(allocator, io, target)` and the `nb` CLI automatically route to child, stdio, TCP (`host:port`), or Unix domain socket paths, and auto-detect the active `$NVIM` socket when run inside Neovim.
 - **Strongly-Typed API Code Generation (260+ functions)**:
   - Generates typesafe wrappers for the entire Neovim API directly from Neovim's `api_info` schema.
   - Automatic parameter packing and return value decoding.
@@ -43,13 +50,96 @@ A high-performance, robust, and strongly-typed **Neovim API client library and C
 
 ---
 
-## Roadmap: Neovim MCP Server
+## Model Context Protocol (MCP) Server
 
-`neovim-boss` is engineered to power an MCP (Model Context Protocol) server for Neovim. The roadmap includes:
+`neovim-boss` provides a native, high-performance [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server built directly into the `nb` binary. It enables AI coding assistants and LLM agents (Claude Desktop, Claude Code, Cursor, OpenCode, etc.) to inspect, query, and interact directly with a running Neovim session over standard I/O (`stdio`).
 
-- **Editor Context Provider**: Expose buffer lists, active window layout, cursor positions, file trees, and LSP diagnostics to AI agents.
-- **Tool Dispatch**: Provide MCP tools for semantic file editing, buffer modifications (`nvim_buf_set_lines`, `nvim_buf_set_text`), executing Lua commands, and running tests.
-- **Agent Coordination**: Enable pair-programming agents to interact directly with the user's active editor session without relying on file system polling.
+### Running the MCP Server (`nb mcp`)
+
+```bash
+# Build the nb binary
+zig build -Doptimize=ReleaseFast
+
+# 1. Connect to an existing Neovim instance via Unix socket:
+./zig-out/bin/nb mcp /tmp/nvim.sock
+
+# 2. Connect via TCP network socket:
+./zig-out/bin/nb mcp 127.0.0.1:6666
+
+# 3. Automatically spawn and supervise a headless child Neovim instance:
+./zig-out/bin/nb mcp child
+
+# 4. Auto-detect from environment (inside a Neovim :terminal session):
+./zig-out/bin/nb mcp
+```
+
+> [!TIP]
+> When running inside a Neovim `:terminal` buffer, Neovim automatically sets the `$NVIM` environment variable pointing to the active RPC socket. Simply invoking `nb mcp` will attach to your current editor session without any manual socket configuration!
+
+### Configuring with MCP Clients
+
+#### Claude Desktop
+Add `neovim-boss` to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "neovim": {
+      "command": "/path/to/neovim-boss/zig-out/bin/nb",
+      "args": ["mcp", "/tmp/nvim.sock"]
+    }
+  }
+}
+```
+
+#### Claude Code
+Add to your project's `.mcp.json` or register via the CLI:
+
+```bash
+claude mcp add neovim -- /path/to/neovim-boss/zig-out/bin/nb mcp /tmp/nvim.sock
+```
+
+### Supported MCP Capabilities
+
+- **Tools**:
+  - `eval_vimscript`: Evaluates any Vimscript expression in the running Neovim instance and returns the JSON-serialized result.
+    - Parameter: `expr` (string, required) - Vimscript expression to evaluate.
+- **Resources**:
+  - `neovim://buffers`: Returns a JSON array of all open buffers with comprehensive status metadata in a single RPC round-trip:
+    - `id`: Buffer number (`bufnr`)
+    - `name`: Buffer file path or name
+    - `listed`: Visible in buffer list (`buflisted`)
+    - `loaded`: Loaded in memory
+    - `modified`: Unsaved changes flag
+    - `hidden`: Hidden / unmapped buffer
+    - `line_count`: Total lines in the buffer
+    - `cursor_line`: Last known cursor line number
+    - `windows`: Array of window IDs displaying this buffer
+    - `last_used`: Last access timestamp
+    - `filetype`: Detected filetype (e.g. `zig`, `markdown`, `lua`)
+    - `buftype`: Neovim buffer type (`""`, `help`, `nofile`, `terminal`, etc.)
+
+---
+
+## Roadmap
+
+Following the comparative architecture review in `plans/next-steps-based-on-comparison.md`, upcoming releases of `neovim-boss` will expand the MCP toolset and library capabilities across five phases:
+
+- **Phase 1: Core Editing & Window Primitives**:
+  - Buffer line manipulation tools (`get_buffer_lines`, `set_buffer_lines`, `open_buffer`, `switch_buffer`).
+  - Cursor navigation & layout control (`get_cursor`, `set_cursor`, `split_window`, `resize_window`).
+- **Phase 2: Safe In-Memory Editing & Situational Awareness**:
+  - Safe search-and-replace (`find_and_replace_buf`) that requires unique substring matches and preserves Neovim's undo history.
+  - Editor orientation snapshots (`get_state_brief`) combining active window context, cursor neighborhood lines, editor mode (`n`, `i`, `v`), and listed buffers.
+- **Phase 3: Visual Annotations & Terminal Channels**:
+  - Extmarks & virtual text (`highlight_range`, `add_virtual_text`, `clear_highlights`) for theme-aware code highlights and inline agent annotations without modifying files on disk.
+  - Non-stealing terminal control (`send_to_terminal`) sending input directly to terminal job channels.
+- **Phase 4: Traditional Vim Primitives & MCP Prompts**:
+  - Register manipulation (`get_register`, `set_register`), marks (`get_marks`, `set_mark`), and Vim regex pattern search (`search_pattern`).
+  - Native MCP Prompts guiding agents on optimal Neovim interaction patterns.
+- **Phase 5: Code Intelligence & LSP Proxies**:
+  - Direct integration with Neovim's built-in LSP client (`get_diagnostics`, `lsp_definition`, `lsp_references`) via `nvim_exec_lua` without requiring separate companion plugins.
+  - Optional HTTP/SSE transport for remote container pair programming.
 
 ---
 
@@ -141,14 +231,31 @@ var nvim = try neovim_boss.attachAddress(gpa, io, "/tmp/nvim.sock");
 defer nvim.deinit();
 ```
 
+### 3. Querying Buffer Telemetry in One Round-Trip
+
+```zig
+// Fetch detailed metadata for listed buffers in 1 RPC round trip
+const buffers = try nvim.listBufInfo(alloc, .{ .buflisted = true });
+for (buffers) |b| {
+    std.debug.print("Buffer #{d}: {s} [ft={s}, modified={}, lines={d}]\n", .{
+        b.id,
+        b.name,
+        b.filetype,
+        b.modified,
+        b.line_count,
+    });
+}
+```
+
 ---
 
 ## Examples
 
-Run any of the included examples with `zig build`:
+Run any of the included examples or the MCP server with `zig build`:
 
 | Command | Description |
 | :--- | :--- |
+| `zig build run -- mcp [listener]` | Runs the Model Context Protocol (MCP) server over stdio. |
 | `zig build run-basic -- <socket>` | Connects via Unix domain socket and calls `nvim_eval("2 + 2")`. |
 | `zig build run-phase2 -- <address>` | Tests connection handshake, client version registration, convenience methods (`eval`, `command`), and `Buffer` ext type decoding. |
 | `zig build run-embed` | Spawns an embedded headless child process (`nvim --embed --headless`), verifies handshake, evaluates expressions, and updates buffer lines. |
@@ -187,8 +294,9 @@ The codebase is structured into clear, decoupled layers:
 - **Layer 1: Transport (`src/transport.zig`)**: Abstraction over POSIX file descriptors, Unix domain sockets, TCP network sockets, stdio, and piped child processes.
 - **Layer 2: Serialization (`zig-msgpack`)**: High-performance streaming MessagePack unpacker and zero-copy packer.
 - **Layer 3: RPC Session & Client (`src/client.zig`)**: MessagePack-RPC session tracking message IDs, request-response matching, notification dispatching, and reverse RPC handling.
-- **Layer 4: Neovim Protocol (`src/nvim.zig`)**: Manages the Neovim handshake (`nvim_set_client_info`, `nvim_get_api_info`), channel metadata, extension type registration, and the event loop.
+- **Layer 4: Neovim Protocol & Types (`src/nvim.zig`, `src/nvim_types.zig`)**: Manages the Neovim handshake (`nvim_set_client_info`), channel metadata, extension type registration, high-level composite queries (`listBufInfo`), and the event loop.
 - **Layer 5: Generated API (`src/api.zig`)**: 260+ strongly-typed wrapper functions and object methods.
+- **Layer 6: MCP Server & CLI (`src/mcp/`, `src/main.zig`)**: JSON-RPC 2.0 stdio server providing MCP tools (`eval_vimscript`) and resources (`neovim://buffers`) with request-scoped arena allocation.
 
 ### 2. Synchronous RPC with Re-Entrant Reverse Handling
 Zig 0.16 currently lacks a finalized language-level async/await story. `neovim-boss` adopts a blocking, synchronous model for outgoing requests while safely handling interleaved notifications and reverse RPC requests (`rpcrequest()`). If Neovim calls back into the client while processing a command, the request handler executes re-entrantly and transmits the response without deadlocking.
