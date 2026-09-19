@@ -1,12 +1,14 @@
 # neovim-boss (`nb`)
 
+<img width="913" height="763" alt="Image" src="https://github.com/user-attachments/assets/9796a114-6394-419d-a4f7-c7d1c10e4a03" />
+
 ```  
   __      __
  <  \____/  >
   | [x][x] |
   \   <>   /
     |    |
-  //| O  |\\
+  //| .. |\\
  (  |____|  )
     d'  'b
 ```
