@@ -303,10 +303,12 @@ test "mcp: list tools and resources" {
     const alloc = arena.allocator();
 
     const tool_list = try mcp.tools.listTools(alloc);
-    try std.testing.expectEqual(@as(usize, 3), tool_list.len);
-    try std.testing.expectEqualStrings("exec_lua", tool_list[0].name);
-    try std.testing.expectEqualStrings("send_command", tool_list[1].name);
-    try std.testing.expectEqualStrings("send_keys", tool_list[2].name);
+    try std.testing.expectEqual(@as(usize, 5), tool_list.len);
+    try std.testing.expectEqualStrings("get_state_brief", tool_list[0].name);
+    try std.testing.expectEqualStrings("get_state", tool_list[1].name);
+    try std.testing.expectEqualStrings("exec_lua", tool_list[2].name);
+    try std.testing.expectEqualStrings("send_command", tool_list[3].name);
+    try std.testing.expectEqualStrings("send_keys", tool_list[4].name);
 
     const res_list = try mcp.resources.listResources(alloc);
     try std.testing.expectEqual(@as(usize, 1), res_list.len);
@@ -359,6 +361,60 @@ test "mcp: unknown tool returns error" {
     const res = try mcp.tools.callTool(&n_instance, alloc, "eval_vimscript", null);
     try std.testing.expectEqual(true, res.isError);
     try std.testing.expectEqualStrings("Unknown tool: eval_vimscript", res.content[0].text);
+}
+
+test "mcp: tool call get_state_brief with embedded child nvim" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var n_instance = try attach(allocator, io, .{ .child = null });
+    defer n_instance.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const res = try mcp.tools.callTool(&n_instance, alloc, "get_state_brief", null);
+    try std.testing.expectEqual(false, res.isError);
+    try std.testing.expect(std.mem.indexOf(u8, res.content[0].text, "\"mode\":\"normal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.content[0].text, "\"active_window\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.content[0].text, "\"context\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.content[0].text, "\"cwd\"") != null);
+}
+
+test "mcp: tool call get_state with embedded child nvim" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var n_instance = try attach(allocator, io, .{ .child = null });
+    defer n_instance.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // 1. Initial full state
+    const res1 = try mcp.tools.callTool(&n_instance, alloc, "get_state", null);
+    try std.testing.expectEqual(false, res1.isError);
+    try std.testing.expect(std.mem.indexOf(u8, res1.content[0].text, "\"mode\":\"normal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res1.content[0].text, "\"windows\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res1.content[0].text, "\"role\":\"active\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res1.content[0].text, "\"indent\"") != null);
+
+    // 2. Set mark a and verify it appears in marks
+    try n_instance.command(alloc, "normal! 20ohello");
+    try n_instance.command(alloc, "10mark a");
+    const res2 = try mcp.tools.callTool(&n_instance, alloc, "get_state", null);
+    try std.testing.expectEqual(false, res2.isError);
+    try std.testing.expect(std.mem.indexOf(u8, res2.content[0].text, "\"mark\":\"a\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res2.content[0].text, "\"line\":10") != null);
+
+    // 3. Vertical split and verify 2 windows in state
+    try n_instance.command(alloc, "vsplit");
+    const res3 = try mcp.tools.callTool(&n_instance, alloc, "get_state", null);
+    try std.testing.expectEqual(false, res3.isError);
+    try std.testing.expect(std.mem.indexOf(u8, res3.content[0].text, "\"role\":\"active\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res3.content[0].text, "\"role\":\"alternate\"") != null);
 }
 
 test "mcp: tool call exec_lua with embedded child nvim" {

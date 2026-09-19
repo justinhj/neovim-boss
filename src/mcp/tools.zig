@@ -126,6 +126,30 @@ fn makeSuccessResult(arena: std.mem.Allocator, text: []const u8) !ToolCallResult
 }
 
 pub fn listTools(arena: std.mem.Allocator) ![]const types.Tool {
+    const get_state_brief_schema =
+        \\{
+        \\  "type": "object",
+        \\  "properties": {
+        \\    "buffer": {
+        \\      "type": ["string", "number"],
+        \\      "description": "Optional buffer name or number to inspect instead of active buffer"
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    const get_state_schema =
+        \\{
+        \\  "type": "object",
+        \\  "properties": {
+        \\    "buffer": {
+        \\      "type": ["string", "number"],
+        \\      "description": "Optional buffer name or number to inspect instead of active buffer"
+        \\    }
+        \\  }
+        \\}
+    ;
+
     const exec_lua_schema =
         \\{
         \\  "type": "object",
@@ -177,22 +201,34 @@ pub fn listTools(arena: std.mem.Allocator) ![]const types.Tool {
         \\}
     ;
 
+    const parsed_get_state_brief = try std.json.parseFromSlice(std.json.Value, arena, get_state_brief_schema, .{});
+    const parsed_get_state = try std.json.parseFromSlice(std.json.Value, arena, get_state_schema, .{});
     const parsed_exec_lua = try std.json.parseFromSlice(std.json.Value, arena, exec_lua_schema, .{});
     const parsed_send_command = try std.json.parseFromSlice(std.json.Value, arena, send_command_schema, .{});
     const parsed_send_keys = try std.json.parseFromSlice(std.json.Value, arena, send_keys_schema, .{});
 
-    const tools = try arena.alloc(types.Tool, 3);
+    const tools = try arena.alloc(types.Tool, 5);
     tools[0] = .{
+        .name = "get_state_brief",
+        .description = "Get a concise orientation snapshot of Neovim: mode, cwd, active window with cursor context, modified buffers, and listed buffers.",
+        .inputSchema = parsed_get_state_brief.value,
+    };
+    tools[1] = .{
+        .name = "get_state",
+        .description = "Get a full session snapshot of Neovim: mode, cwd, all visible windows with cursor context, marks, folds, visual selections, diagnostics counts, and buffers.",
+        .inputSchema = parsed_get_state.value,
+    };
+    tools[2] = .{
         .name = "exec_lua",
         .description = "Execute arbitrary Lua code in Neovim's Lua runtime and return the result",
         .inputSchema = parsed_exec_lua.value,
     };
-    tools[1] = .{
+    tools[3] = .{
         .name = "send_command",
         .description = "Execute a Vim Ex command and capture its output",
         .inputSchema = parsed_send_command.value,
     };
-    tools[2] = .{
+    tools[4] = .{
         .name = "send_keys",
         .description = "Send keystrokes to Neovim as if typed by the user",
         .inputSchema = parsed_send_keys.value,
@@ -206,7 +242,11 @@ pub fn callTool(
     name: []const u8,
     arguments: ?std.json.Value,
 ) !ToolCallResult {
-    if (std.mem.eql(u8, name, "exec_lua") or std.mem.eql(u8, name, "eval_lua")) {
+    if (std.mem.eql(u8, name, "get_state_brief")) {
+        return executeGetState(nvim, arena, true, arguments);
+    } else if (std.mem.eql(u8, name, "get_state")) {
+        return executeGetState(nvim, arena, false, arguments);
+    } else if (std.mem.eql(u8, name, "exec_lua") or std.mem.eql(u8, name, "eval_lua")) {
         return executeExecLua(nvim, arena, name, arguments);
     } else if (std.mem.eql(u8, name, "send_command") or std.mem.eql(u8, name, "exec_command") or std.mem.eql(u8, name, "vim_command")) {
         return executeSendCommand(nvim, arena, arguments);
@@ -216,6 +256,28 @@ pub fn callTool(
 
     const err_text = try std.fmt.allocPrint(arena, "Unknown tool: {s}", .{name});
     return makeErrorResult(arena, err_text);
+}
+
+fn executeGetState(
+    nvim: *Nvim,
+    arena: std.mem.Allocator,
+    brief: bool,
+    arguments: ?std.json.Value,
+) !ToolCallResult {
+    var target_buf: ?std.json.Value = null;
+    if (arguments) |args| {
+        if (args == .object) {
+            target_buf = args.object.get("buffer");
+        }
+    }
+
+    const state_res = nvim.getState(arena, brief, target_buf) catch |err| {
+        const err_text = try std.fmt.allocPrint(arena, "Failed to get editor state: {s}", .{@errorName(err)});
+        return makeErrorResult(arena, err_text);
+    };
+
+    const json_str = try msgPackToJsonString(arena, state_res);
+    return makeSuccessResult(arena, json_str);
 }
 
 fn executeExecLua(

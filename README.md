@@ -21,7 +21,7 @@ A high-performance, robust, and strongly-typed **Neovim API client library and C
 
 - **Built-in Model Context Protocol (MCP) Server**:
   - Standards-compliant JSON-RPC 2.0 stdio server implementing the MCP specification.
-  - Exposes essential execution tools (`exec_lua`, `send_command`, `send_keys`) and resources like `neovim://buffers`.
+  - Exposes state awareness and execution tools (`get_state_brief`, `get_state`, `exec_lua`, `send_command`, `send_keys`) and resources like `neovim://buffers`.
   - Exposes resources like `neovim://buffers` for real-time buffer telemetry with detailed metadata.
   - Zero external runtimes: compiles to a fast, standalone native binary (`nb`) with instant startup (<1ms).
 - **Fast Single-Round-Trip Buffer Telemetry (`listBufInfo`, `BufferInfo`)**:
@@ -102,6 +102,10 @@ claude mcp add neovim -- /path/to/neovim-boss/zig-out/bin/nb mcp /tmp/nvim.sock
 ### Supported MCP Capabilities
 
 - **Tools**:
+  - `get_state_brief`: Returns a high-speed, token-efficient orientation snapshot of the editor: mode, cwd, active window with numbered cursor context lines, alternate window, open terminals, modified buffers, and listed buffers. Ideal for turn start.
+    - Parameter: `buffer` (string | number, optional) - Target buffer name or number to inspect.
+  - `get_state`: Returns a full session snapshot: mode, cwd, listed/modified buffers, all visible windows with cursor context, active marks (`a-z`), folds, visual selection bounds, indent settings, and LSP diagnostic counts.
+    - Parameter: `buffer` (string | number, optional) - Target buffer name or number to inspect.
   - `exec_lua`: Executes arbitrary Lua code in Neovim's Lua runtime and returns the JSON-serialized result. Supports multi-line blocks, API access (`vim.api.*`, `vim.fn.*`), and return statements (also accepts `eval_lua` as an alias).
     - Parameters: `code` (string, required) - Lua code snippet to execute; `args` (array, optional) - Arguments passed to the chunk (`...`).
   - `send_command`: Executes a Vim Ex command (e.g. `:w`, `:split`, `:edit`, `:set number`) and captures formatted command output. Leading `:` is optional (also accepts `exec_command` and `vim_command` as aliases).
@@ -300,7 +304,7 @@ The codebase is structured into clear, decoupled layers:
 - **Layer 3: RPC Session & Client (`src/client.zig`)**: MessagePack-RPC session tracking message IDs, request-response matching, notification dispatching, and reverse RPC handling.
 - **Layer 4: Neovim Protocol & Types (`src/nvim.zig`, `src/nvim_types.zig`)**: Manages the Neovim handshake (`nvim_set_client_info`), channel metadata, extension type registration, high-level composite queries (`listBufInfo`), and the event loop.
 - **Layer 5: Generated API (`src/api.zig`)**: 260+ strongly-typed wrapper functions and object methods.
-- **Layer 6: MCP Server & CLI (`src/mcp/`, `src/main.zig`)**: JSON-RPC 2.0 stdio server providing MCP tools (`exec_lua`, `send_command`, `send_keys`) and resources (`neovim://buffers`) with request-scoped arena allocation.
+- **Layer 6: MCP Server & CLI (`src/mcp/`, `src/main.zig`)**: JSON-RPC 2.0 stdio server providing MCP tools (`get_state_brief`, `get_state`, `exec_lua`, `send_command`, `send_keys`) and resources (`neovim://buffers`) with request-scoped arena allocation.
 
 ### 2. Synchronous RPC with Re-Entrant Reverse Handling
 Zig 0.16 currently lacks a finalized language-level async/await story. `neovim-boss` adopts a blocking, synchronous model for outgoing requests while safely handling interleaved notifications and reverse RPC requests (`rpcrequest()`). If Neovim calls back into the client while processing a command, the request handler executes re-entrantly and transmits the response without deadlocking.
