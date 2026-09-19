@@ -1,6 +1,6 @@
 # neovim-boss (`nb`)
 
-<img width="913" height="763" alt="Image" src="https://github.com/user-attachments/assets/9796a114-6394-419d-a4f7-c7d1c10e4a03" />
+<img width="913" height="763" alt="Neovim's mascot - a monster robot" src="https://github.com/user-attachments/assets/9796a114-6394-419d-a4f7-c7d1c10e4a03" />
 
 ```  
   __      __
@@ -13,7 +13,9 @@
     d'  'b
 ```
 
-A high-performance, robust, and strongly-typed **Neovim API client library and CLI** for [Zig](https://ziglang.org) (v0.16.0+), built on [`justinhj/zig-msgpack`](https://github.com/justinhj/zig-msgpack).
+Neovim-boss's mascot En-Bee.
+
+A high-performance, robust, and strongly-typed **Neovim API client library, MCP server and CLI** for [Zig](https://ziglang.org) (v0.16.0+), built on [`justinhj/zig-msgpack`](https://github.com/justinhj/zig-msgpack).
 
 `neovim-boss` provides complete programmatic control over running or embedded Neovim instances via MessagePack-RPC. It is designed both as a standalone library for Zig applications and as a native **Neovim Model Context Protocol (MCP) server**, allowing AI agents and LLM tools (such as Claude Desktop, Claude Code, Cursor, and OpenCode) to introspect, query, and interact with your editor in real time.
 
@@ -154,6 +156,8 @@ Following the comparative architecture review in `plans/next-steps-based-on-comp
 ---
 
 ## Installation
+
+These instructions are for when using as a library in your own applications.
 
 Add `neovim-boss` to your project's `build.zig.zon`:
 
@@ -328,3 +332,5 @@ Neovim's API schema is extracted via `nvim --api-info` and bundled in `data/api_
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
+
+Copyright 2026 Justin Heyes-Jones
