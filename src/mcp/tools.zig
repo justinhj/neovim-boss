@@ -6,6 +6,7 @@ const nvim_mod = @import("../nvim.zig");
 const Nvim = nvim_mod.Nvim;
 const nvim_types = @import("../nvim_types.zig");
 const types = @import("types.zig");
+const object_util = @import("../object_util.zig");
 
 pub const ToolCallResult = struct {
     content: []const types.TextContent,
@@ -201,13 +202,89 @@ pub fn listTools(arena: std.mem.Allocator) ![]const types.Tool {
         \\}
     ;
 
+    const read_full_buf_schema =
+        \\{
+        \\  "type": "object",
+        \\  "properties": {
+        \\    "buffer": {
+        \\      "type": ["string", "number"],
+        \\      "description": "Buffer name, relative/absolute file path, or buffer number"
+        \\    }
+        \\  },
+        \\  "required": ["buffer"]
+        \\}
+    ;
+
+    const read_buf_range_schema =
+        \\{
+        \\  "type": "object",
+        \\  "properties": {
+        \\    "buffer": {
+        \\      "type": ["string", "number"],
+        \\      "description": "Buffer name, relative/absolute file path, or buffer number"
+        \\    },
+        \\    "start_line": {
+        \\      "type": "integer",
+        \\      "description": "First line to read (1-indexed, inclusive)"
+        \\    },
+        \\    "end_line": {
+        \\      "type": "integer",
+        \\      "description": "Last line to read (1-indexed, inclusive)"
+        \\    }
+        \\  },
+        \\  "required": ["buffer", "start_line", "end_line"]
+        \\}
+    ;
+
+    const find_and_replace_buf_schema =
+        \\{
+        \\  "type": "object",
+        \\  "properties": {
+        \\    "buffer": {
+        \\      "type": ["string", "number"],
+        \\      "description": "Buffer name, relative/absolute file path, or buffer number"
+        \\    },
+        \\    "find": {
+        \\      "type": "string",
+        \\      "description": "The exact text to find. Must match exactly once in the buffer. Include surrounding context to make unique if necessary."
+        \\    },
+        \\    "replace": {
+        \\      "type": "string",
+        \\      "description": "The replacement text"
+        \\    }
+        \\  },
+        \\  "required": ["buffer", "find", "replace"]
+        \\}
+    ;
+
+    const write_full_buf_schema =
+        \\{
+        \\  "type": "object",
+        \\  "properties": {
+        \\    "buffer": {
+        \\      "type": ["string", "number"],
+        \\      "description": "Buffer name, relative/absolute file path, or buffer number"
+        \\    },
+        \\    "content": {
+        \\      "type": "string",
+        \\      "description": "The full replacement text for the buffer"
+        \\    }
+        \\  },
+        \\  "required": ["buffer", "content"]
+        \\}
+    ;
+
     const parsed_get_state_brief = try std.json.parseFromSlice(std.json.Value, arena, get_state_brief_schema, .{});
     const parsed_get_state = try std.json.parseFromSlice(std.json.Value, arena, get_state_schema, .{});
     const parsed_exec_lua = try std.json.parseFromSlice(std.json.Value, arena, exec_lua_schema, .{});
     const parsed_send_command = try std.json.parseFromSlice(std.json.Value, arena, send_command_schema, .{});
     const parsed_send_keys = try std.json.parseFromSlice(std.json.Value, arena, send_keys_schema, .{});
+    const parsed_read_full_buf = try std.json.parseFromSlice(std.json.Value, arena, read_full_buf_schema, .{});
+    const parsed_read_buf_range = try std.json.parseFromSlice(std.json.Value, arena, read_buf_range_schema, .{});
+    const parsed_find_and_replace_buf = try std.json.parseFromSlice(std.json.Value, arena, find_and_replace_buf_schema, .{});
+    const parsed_write_full_buf = try std.json.parseFromSlice(std.json.Value, arena, write_full_buf_schema, .{});
 
-    const tools = try arena.alloc(types.Tool, 5);
+    const tools = try arena.alloc(types.Tool, 9);
     tools[0] = .{
         .name = "get_state_brief",
         .description = "Get a concise orientation snapshot of Neovim: mode, cwd, active window with cursor context, modified buffers, and listed buffers.",
@@ -233,6 +310,26 @@ pub fn listTools(arena: std.mem.Allocator) ![]const types.Tool {
         .description = "Send keystrokes to Neovim as if typed by the user",
         .inputSchema = parsed_send_keys.value,
     };
+    tools[5] = .{
+        .name = "read_full_buf",
+        .description = "Read the entire contents of a buffer, with line numbers.",
+        .inputSchema = parsed_read_full_buf.value,
+    };
+    tools[6] = .{
+        .name = "read_buf_range",
+        .description = "Read a specific line range from a buffer.",
+        .inputSchema = parsed_read_buf_range.value,
+    };
+    tools[7] = .{
+        .name = "find_and_replace_buf",
+        .description = "Exact-match find and replace within a buffer.",
+        .inputSchema = parsed_find_and_replace_buf.value,
+    };
+    tools[8] = .{
+        .name = "write_full_buf",
+        .description = "Replace the entire contents of a buffer.",
+        .inputSchema = parsed_write_full_buf.value,
+    };
     return tools;
 }
 
@@ -252,6 +349,14 @@ pub fn callTool(
         return executeSendCommand(nvim, arena, arguments);
     } else if (std.mem.eql(u8, name, "send_keys")) {
         return executeSendKeys(nvim, arena, arguments);
+    } else if (std.mem.eql(u8, name, "read_full_buf")) {
+        return executeReadFullBuf(nvim, arena, arguments);
+    } else if (std.mem.eql(u8, name, "read_buf_range")) {
+        return executeReadBufRange(nvim, arena, arguments);
+    } else if (std.mem.eql(u8, name, "find_and_replace_buf")) {
+        return executeFindAndReplaceBuf(nvim, arena, arguments);
+    } else if (std.mem.eql(u8, name, "write_full_buf")) {
+        return executeWriteFullBuf(nvim, arena, arguments);
     }
 
     const err_text = try std.fmt.allocPrint(arena, "Unknown tool: {s}", .{name});
@@ -438,4 +543,174 @@ fn executeSendKeys(
     const json_text = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(std.json.Value{ .object = confirm_map }, .{})});
     return makeSuccessResult(arena, json_text);
 }
+
+fn parseOptionalInt(val: std.json.Value) ?i64 {
+    return switch (val) {
+        .integer => |i| i,
+        .number_string => |s| std.fmt.parseInt(i64, s, 10) catch null,
+        .string => |s| std.fmt.parseInt(i64, s, 10) catch null,
+        else => null,
+    };
+}
+
+fn handleBufferResult(arena: std.mem.Allocator, res: MsgPackObject) !ToolCallResult {
+    if (res == .map) {
+        for (res.map) |entry| {
+            if (entry.key == .string and std.mem.eql(u8, entry.key.string, "error")) {
+                if (object_util.asString(entry.value)) |err_str| {
+                    return makeErrorResult(arena, err_str);
+                }
+            }
+        }
+    }
+    const json_str = try msgPackToJsonString(arena, res);
+    return makeSuccessResult(arena, json_str);
+}
+
+fn executeReadFullBuf(
+    nvim: *Nvim,
+    arena: std.mem.Allocator,
+    arguments: ?std.json.Value,
+) !ToolCallResult {
+    const args = arguments orelse {
+        return makeErrorResult(arena, "Missing arguments: expected an object containing 'buffer'");
+    };
+
+    if (args != .object) {
+        return makeErrorResult(arena, "Invalid arguments: expected a JSON object");
+    }
+
+    const buf_val = args.object.get("buffer") orelse args.object.get("file") orelse {
+        return makeErrorResult(arena, "Missing required argument 'buffer'");
+    };
+
+    const target_obj = try jsonToMsgPack(arena, buf_val);
+    const res = nvim.readFullBuf(arena, target_obj) catch |err| {
+        const msg = nvim.client.lastError() orelse @errorName(err);
+        const err_text = try std.fmt.allocPrint(arena, "Failed to read buffer: {s}", .{msg});
+        return makeErrorResult(arena, err_text);
+    };
+
+    return handleBufferResult(arena, res);
+}
+
+fn executeReadBufRange(
+    nvim: *Nvim,
+    arena: std.mem.Allocator,
+    arguments: ?std.json.Value,
+) !ToolCallResult {
+    const args = arguments orelse {
+        return makeErrorResult(arena, "Missing arguments: expected an object containing 'buffer', 'start_line', and 'end_line'");
+    };
+
+    if (args != .object) {
+        return makeErrorResult(arena, "Invalid arguments: expected a JSON object");
+    }
+
+    const buf_val = args.object.get("buffer") orelse args.object.get("file") orelse {
+        return makeErrorResult(arena, "Missing required argument 'buffer'");
+    };
+
+    const start_line_val = args.object.get("start_line") orelse {
+        return makeErrorResult(arena, "Missing required argument 'start_line'");
+    };
+    const start_line = parseOptionalInt(start_line_val) orelse {
+        return makeErrorResult(arena, "Argument 'start_line' must be an integer");
+    };
+
+    const end_line_val = args.object.get("end_line") orelse {
+        return makeErrorResult(arena, "Missing required argument 'end_line'");
+    };
+    const end_line = parseOptionalInt(end_line_val) orelse {
+        return makeErrorResult(arena, "Argument 'end_line' must be an integer");
+    };
+
+    const target_obj = try jsonToMsgPack(arena, buf_val);
+    const res = nvim.readBufRange(arena, target_obj, start_line, end_line) catch |err| {
+        const msg = nvim.client.lastError() orelse @errorName(err);
+        const err_text = try std.fmt.allocPrint(arena, "Failed to read buffer range: {s}", .{msg});
+        return makeErrorResult(arena, err_text);
+    };
+
+    return handleBufferResult(arena, res);
+}
+
+fn executeFindAndReplaceBuf(
+    nvim: *Nvim,
+    arena: std.mem.Allocator,
+    arguments: ?std.json.Value,
+) !ToolCallResult {
+    const args = arguments orelse {
+        return makeErrorResult(arena, "Missing arguments: expected an object containing 'buffer', 'find', and 'replace'");
+    };
+
+    if (args != .object) {
+        return makeErrorResult(arena, "Invalid arguments: expected a JSON object");
+    }
+
+    const buf_val = args.object.get("buffer") orelse args.object.get("file") orelse {
+        return makeErrorResult(arena, "Missing required argument 'buffer'");
+    };
+
+    const find_val = args.object.get("find") orelse args.object.get("old_string") orelse {
+        return makeErrorResult(arena, "Missing required argument 'find'");
+    };
+    if (find_val != .string) {
+        return makeErrorResult(arena, "Argument 'find' must be a string");
+    }
+    if (find_val.string.len == 0) {
+        return makeErrorResult(arena, "Argument 'find' cannot be empty");
+    }
+
+    const replace_val = args.object.get("replace") orelse args.object.get("new_string") orelse {
+        return makeErrorResult(arena, "Missing required argument 'replace'");
+    };
+    if (replace_val != .string) {
+        return makeErrorResult(arena, "Argument 'replace' must be a string");
+    }
+
+    const target_obj = try jsonToMsgPack(arena, buf_val);
+    const res = nvim.findAndReplaceBuf(arena, target_obj, find_val.string, replace_val.string) catch |err| {
+        const msg = nvim.client.lastError() orelse @errorName(err);
+        const err_text = try std.fmt.allocPrint(arena, "Failed to find and replace in buffer: {s}", .{msg});
+        return makeErrorResult(arena, err_text);
+    };
+
+    return handleBufferResult(arena, res);
+}
+
+fn executeWriteFullBuf(
+    nvim: *Nvim,
+    arena: std.mem.Allocator,
+    arguments: ?std.json.Value,
+) !ToolCallResult {
+    const args = arguments orelse {
+        return makeErrorResult(arena, "Missing arguments: expected an object containing 'buffer' and 'content'");
+    };
+
+    if (args != .object) {
+        return makeErrorResult(arena, "Invalid arguments: expected a JSON object");
+    }
+
+    const buf_val = args.object.get("buffer") orelse args.object.get("file") orelse {
+        return makeErrorResult(arena, "Missing required argument 'buffer'");
+    };
+
+    const content_val = args.object.get("content") orelse args.object.get("text") orelse args.object.get("new_string") orelse {
+        return makeErrorResult(arena, "Missing required argument 'content'");
+    };
+    if (content_val != .string) {
+        return makeErrorResult(arena, "Argument 'content' must be a string");
+    }
+
+    const target_obj = try jsonToMsgPack(arena, buf_val);
+    const res = nvim.writeFullBuf(arena, target_obj, content_val.string) catch |err| {
+        const msg = nvim.client.lastError() orelse @errorName(err);
+        const err_text = try std.fmt.allocPrint(arena, "Failed to write buffer: {s}", .{msg});
+        return makeErrorResult(arena, err_text);
+    };
+
+    return handleBufferResult(arena, res);
+}
+
 

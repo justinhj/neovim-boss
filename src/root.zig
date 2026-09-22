@@ -303,12 +303,16 @@ test "mcp: list tools and resources" {
     const alloc = arena.allocator();
 
     const tool_list = try mcp.tools.listTools(alloc);
-    try std.testing.expectEqual(@as(usize, 5), tool_list.len);
+    try std.testing.expectEqual(@as(usize, 9), tool_list.len);
     try std.testing.expectEqualStrings("get_state_brief", tool_list[0].name);
     try std.testing.expectEqualStrings("get_state", tool_list[1].name);
     try std.testing.expectEqualStrings("exec_lua", tool_list[2].name);
     try std.testing.expectEqualStrings("send_command", tool_list[3].name);
     try std.testing.expectEqualStrings("send_keys", tool_list[4].name);
+    try std.testing.expectEqualStrings("read_full_buf", tool_list[5].name);
+    try std.testing.expectEqualStrings("read_buf_range", tool_list[6].name);
+    try std.testing.expectEqualStrings("find_and_replace_buf", tool_list[7].name);
+    try std.testing.expectEqualStrings("write_full_buf", tool_list[8].name);
 
     const res_list = try mcp.resources.listResources(alloc);
     try std.testing.expectEqual(@as(usize, 1), res_list.len);
@@ -534,6 +538,147 @@ test "mcp: tool call send_keys with embedded child nvim" {
     } else {
         return error.UnexpectedType;
     }
+}
+
+test "mcp: tool calls write_full_buf and read_full_buf with embedded child nvim" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var n_instance = try attach(allocator, io, .{ .child = null });
+    defer n_instance.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // 1. Write full buffer to a new file buffer
+    var write_args: std.json.ObjectMap = .empty;
+    try write_args.put(alloc, "buffer", .{ .string = "test_doc.txt" });
+    try write_args.put(alloc, "content", .{ .string = "line one\nline two\nline three\n" });
+    const write_res = try mcp.tools.callTool(&n_instance, alloc, "write_full_buf", .{ .object = write_args });
+    try std.testing.expectEqual(false, write_res.isError);
+    try std.testing.expect(std.mem.indexOf(u8, write_res.content[0].text, "\"total_lines\":3") != null);
+
+    // 2. Read full buffer back
+    var read_args: std.json.ObjectMap = .empty;
+    try read_args.put(alloc, "buffer", .{ .string = "test_doc.txt" });
+    const read_res = try mcp.tools.callTool(&n_instance, alloc, "read_full_buf", .{ .object = read_args });
+    try std.testing.expectEqual(false, read_res.isError);
+    try std.testing.expect(std.mem.indexOf(u8, read_res.content[0].text, "\"1: line one\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, read_res.content[0].text, "\"2: line two\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, read_res.content[0].text, "\"3: line three\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, read_res.content[0].text, "\"total_lines\":3") != null);
+
+    // 3. Error on non-existent buffer
+    var bad_read: std.json.ObjectMap = .empty;
+    try bad_read.put(alloc, "buffer", .{ .integer = 99999 });
+    const bad_res = try mcp.tools.callTool(&n_instance, alloc, "read_full_buf", .{ .object = bad_read });
+    try std.testing.expectEqual(true, bad_res.isError);
+}
+
+test "mcp: tool call read_buf_range with embedded child nvim" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var n_instance = try attach(allocator, io, .{ .child = null });
+    defer n_instance.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Setup buffer with 5 lines
+    var write_args: std.json.ObjectMap = .empty;
+    try write_args.put(alloc, "buffer", .{ .string = "range_test.txt" });
+    try write_args.put(alloc, "content", .{ .string = "row 1\nrow 2\nrow 3\nrow 4\nrow 5" });
+    _ = try mcp.tools.callTool(&n_instance, alloc, "write_full_buf", .{ .object = write_args });
+
+    // 1. Read range lines 2..4
+    var range_args: std.json.ObjectMap = .empty;
+    try range_args.put(alloc, "buffer", .{ .string = "range_test.txt" });
+    try range_args.put(alloc, "start_line", .{ .integer = 2 });
+    try range_args.put(alloc, "end_line", .{ .integer = 4 });
+    const res1 = try mcp.tools.callTool(&n_instance, alloc, "read_buf_range", .{ .object = range_args });
+    try std.testing.expectEqual(false, res1.isError);
+    try std.testing.expect(std.mem.indexOf(u8, res1.content[0].text, "\"2: row 2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res1.content[0].text, "\"3: row 3\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res1.content[0].text, "\"4: row 4\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res1.content[0].text, "\"1: row 1\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, res1.content[0].text, "\"5: row 5\"") == null);
+
+    // 2. Inverted range (4 down to 2) auto-swaps
+    var swap_args: std.json.ObjectMap = .empty;
+    try swap_args.put(alloc, "buffer", .{ .string = "range_test.txt" });
+    try swap_args.put(alloc, "start_line", .{ .integer = 4 });
+    try swap_args.put(alloc, "end_line", .{ .integer = 2 });
+    const res2 = try mcp.tools.callTool(&n_instance, alloc, "read_buf_range", .{ .object = swap_args });
+    try std.testing.expectEqual(false, res2.isError);
+    try std.testing.expect(std.mem.indexOf(u8, res2.content[0].text, "\"2: row 2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res2.content[0].text, "\"4: row 4\"") != null);
+}
+
+test "mcp: tool call find_and_replace_buf with embedded child nvim" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var n_instance = try attach(allocator, io, .{ .child = null });
+    defer n_instance.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Setup buffer
+    var write_args: std.json.ObjectMap = .empty;
+    try write_args.put(alloc, "buffer", .{ .string = "edit_test.txt" });
+    try write_args.put(alloc, "content", .{ .string = "const alpha = 1;\nconst beta = 2;\nconst gamma = 3;" });
+    _ = try mcp.tools.callTool(&n_instance, alloc, "write_full_buf", .{ .object = write_args });
+    try n_instance.command(alloc, "buffer edit_test.txt");
+    try n_instance.command(alloc, "let &undolevels = &undolevels");
+
+    // 1. Successful exact find and replace
+    var replace_args: std.json.ObjectMap = .empty;
+    try replace_args.put(alloc, "buffer", .{ .string = "edit_test.txt" });
+    try replace_args.put(alloc, "find", .{ .string = "const beta = 2;" });
+    try replace_args.put(alloc, "replace", .{ .string = "const beta = 42;" });
+    const res1 = try mcp.tools.callTool(&n_instance, alloc, "find_and_replace_buf", .{ .object = replace_args });
+    try std.testing.expectEqual(false, res1.isError);
+    try std.testing.expect(std.mem.indexOf(u8, res1.content[0].text, "\"start_line\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res1.content[0].text, "\"lines_removed\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res1.content[0].text, "\"lines_added\":1") != null);
+
+    // Verify change in buffer
+    var read_args: std.json.ObjectMap = .empty;
+    try read_args.put(alloc, "buffer", .{ .string = "edit_test.txt" });
+    const check_res = try mcp.tools.callTool(&n_instance, alloc, "read_full_buf", .{ .object = read_args });
+    try std.testing.expect(std.mem.indexOf(u8, check_res.content[0].text, "const beta = 42;") != null);
+
+    // 2. Verify undo support via send_keys
+    try n_instance.command(alloc, "buffer edit_test.txt");
+    var undo_args: std.json.ObjectMap = .empty;
+    try undo_args.put(alloc, "keys", .{ .string = "u" });
+    _ = try mcp.tools.callTool(&n_instance, alloc, "send_keys", .{ .object = undo_args });
+
+    const check_undo = try mcp.tools.callTool(&n_instance, alloc, "read_full_buf", .{ .object = read_args });
+    try std.testing.expect(std.mem.indexOf(u8, check_undo.content[0].text, "const beta = 2;") != null);
+
+    // 3. String not found error
+    var missing_args: std.json.ObjectMap = .empty;
+    try missing_args.put(alloc, "buffer", .{ .string = "edit_test.txt" });
+    try missing_args.put(alloc, "find", .{ .string = "nonexistent_target_string" });
+    try missing_args.put(alloc, "replace", .{ .string = "replacement" });
+    const err_res1 = try mcp.tools.callTool(&n_instance, alloc, "find_and_replace_buf", .{ .object = missing_args });
+    try std.testing.expectEqual(true, err_res1.isError);
+    try std.testing.expect(std.mem.indexOf(u8, err_res1.content[0].text, "not found") != null);
+
+    // 4. Non-unique string error
+    var dup_args: std.json.ObjectMap = .empty;
+    try dup_args.put(alloc, "buffer", .{ .string = "edit_test.txt" });
+    try dup_args.put(alloc, "find", .{ .string = "const " });
+    try dup_args.put(alloc, "replace", .{ .string = "var " });
+    const err_res2 = try mcp.tools.callTool(&n_instance, alloc, "find_and_replace_buf", .{ .object = dup_args });
+    try std.testing.expectEqual(true, err_res2.isError);
+    try std.testing.expect(std.mem.indexOf(u8, err_res2.content[0].text, "multiple locations") != null);
 }
 
 test "mcp: resource read neovim://buffers with embedded child nvim" {

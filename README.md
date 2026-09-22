@@ -25,7 +25,7 @@ A high-performance, robust, and strongly-typed **Neovim API client library, MCP 
 
 - **Built-in Model Context Protocol (MCP) Server**:
   - Standards-compliant JSON-RPC 2.0 stdio server implementing the MCP specification.
-  - Exposes state awareness and execution tools (`get_state_brief`, `get_state`, `exec_lua`, `send_command`, `send_keys`) and resources like `neovim://buffers`.
+  - Exposes state awareness, buffer operations, and execution tools (`get_state_brief`, `get_state`, `read_full_buf`, `read_buf_range`, `find_and_replace_buf`, `write_full_buf`, `exec_lua`, `send_command`, `send_keys`) and resources like `neovim://buffers`.
   - Exposes resources like `neovim://buffers` for real-time buffer telemetry with detailed metadata.
   - Zero external runtimes: compiles to a fast, standalone native binary (`nb`) with instant startup (<1ms).
 - **Fast Single-Round-Trip Buffer Telemetry (`listBufInfo`, `BufferInfo`)**:
@@ -116,6 +116,14 @@ claude mcp add neovim -- /path/to/neovim-boss/zig-out/bin/nb mcp /tmp/nvim.sock
     - Parameters: `command` (string, required) - Vim command to execute; `output` (boolean, optional, default true) - Whether to capture command output.
   - `send_keys`: Injects keystrokes into Neovim as if typed by the user. Automatically translates Vim key notations (`<Esc>`, `<CR>`, `<Tab>`, `<C-w>v`) into terminal control codes.
     - Parameters: `keys` (string, required) - Keystrokes to send; `escape` (boolean, optional, default true) - Prepend `<Esc>` to guarantee normal-mode entry.
+  - `read_full_buf`: Read the entire contents of a buffer, with line numbers.
+    - Parameter: `buffer` (string | number, required) - Buffer name, relative/absolute file path, or buffer number.
+  - `read_buf_range`: Read a specific line range from a buffer.
+    - Parameters: `buffer` (string | number, required) - Buffer name, path, or number; `start_line` (integer, required) - 1-indexed first line; `end_line` (integer, required) - 1-indexed last line.
+  - `find_and_replace_buf`: Exact-match find and replace within a buffer. Safe in-memory replacement with full undo tree preservation; fails if string is missing or non-unique.
+    - Parameters: `buffer` (string | number, required) - Buffer name, path, or number; `find` (string, required) - Exact text to locate; `replace` (string, required) - Replacement text.
+  - `write_full_buf`: Replace the entire contents of a buffer in-memory with full undo support.
+    - Parameters: `buffer` (string | number, required) - Target buffer name, path, or number; `content` (string, required) - Full replacement text.
 - **Resources**:
   - `neovim://buffers`: Returns a JSON array of all open buffers with comprehensive status metadata in a single RPC round-trip:
     - `id`: Buffer number (`bufnr`)
@@ -310,7 +318,7 @@ The codebase is structured into clear, decoupled layers:
 - **Layer 3: RPC Session & Client (`src/client.zig`)**: MessagePack-RPC session tracking message IDs, request-response matching, notification dispatching, and reverse RPC handling.
 - **Layer 4: Neovim Protocol & Types (`src/nvim.zig`, `src/nvim_types.zig`)**: Manages the Neovim handshake (`nvim_set_client_info`), channel metadata, extension type registration, high-level composite queries (`listBufInfo`), and the event loop.
 - **Layer 5: Generated API (`src/api.zig`)**: 260+ strongly-typed wrapper functions and object methods.
-- **Layer 6: MCP Server & CLI (`src/mcp/`, `src/main.zig`)**: JSON-RPC 2.0 stdio server providing MCP tools (`get_state_brief`, `get_state`, `exec_lua`, `send_command`, `send_keys`) and resources (`neovim://buffers`) with request-scoped arena allocation.
+- **Layer 6: MCP Server & CLI (`src/mcp/`, `src/main.zig`)**: JSON-RPC 2.0 stdio server providing MCP tools (`get_state_brief`, `get_state`, `read_full_buf`, `read_buf_range`, `find_and_replace_buf`, `write_full_buf`, `exec_lua`, `send_command`, `send_keys`) and resources (`neovim://buffers`) with request-scoped arena allocation.
 
 ### 2. Synchronous RPC with Re-Entrant Reverse Handling
 Zig 0.16 currently lacks a finalized language-level async/await story. `neovim-boss` adopts a blocking, synchronous model for outgoing requests while safely handling interleaved notifications and reverse RPC requests (`rpcrequest()`). If Neovim calls back into the client while processing a command, the request handler executes re-entrantly and transmits the response without deadlocking.

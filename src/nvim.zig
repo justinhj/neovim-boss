@@ -489,6 +489,240 @@ pub const Nvim = struct {
         \\end
     ;
 
+    /// Read the entire contents of a buffer, with line numbers.
+    pub fn readFullBuf(
+        self: *Nvim,
+        arena: std.mem.Allocator,
+        buf_target: MsgPackObject,
+    ) !MsgPackObject {
+        const lua_args = [_]MsgPackObject{buf_target};
+        return try self.execLua(arena, read_full_buf_lua_script, &lua_args);
+    }
+
+    /// Read a specific line range from a buffer.
+    pub fn readBufRange(
+        self: *Nvim,
+        arena: std.mem.Allocator,
+        buf_target: MsgPackObject,
+        start_line: i64,
+        end_line: i64,
+    ) !MsgPackObject {
+        const lua_args = [_]MsgPackObject{
+            buf_target,
+            .{ .integer = start_line },
+            .{ .integer = end_line },
+        };
+        return try self.execLua(arena, read_buf_range_lua_script, &lua_args);
+    }
+
+    /// Exact-match find and replace within a buffer.
+    pub fn findAndReplaceBuf(
+        self: *Nvim,
+        arena: std.mem.Allocator,
+        buf_target: MsgPackObject,
+        find_str: []const u8,
+        replace_str: []const u8,
+    ) !MsgPackObject {
+        const find_mut = try arena.dupe(u8, find_str);
+        const replace_mut = try arena.dupe(u8, replace_str);
+        const lua_args = [_]MsgPackObject{
+            buf_target,
+            .{ .string = find_mut },
+            .{ .string = replace_mut },
+        };
+        return try self.execLua(arena, find_and_replace_buf_lua_script, &lua_args);
+    }
+
+    /// Replace the entire contents of a buffer.
+    pub fn writeFullBuf(
+        self: *Nvim,
+        arena: std.mem.Allocator,
+        buf_target: MsgPackObject,
+        content: []const u8,
+    ) !MsgPackObject {
+        const content_mut = try arena.dupe(u8, content);
+        const lua_args = [_]MsgPackObject{
+            buf_target,
+            .{ .string = content_mut },
+        };
+        return try self.execLua(arena, write_full_buf_lua_script, &lua_args);
+    }
+
+    const lua_buf_helpers =
+        \\local function ensure_no_swap_prompt()
+        \\  if not vim.o.shortmess:find("A", 1, true) then
+        \\    vim.o.shortmess = vim.o.shortmess .. "A"
+        \\  end
+        \\end
+        \\
+        \\local function resolve_buf(target)
+        \\  ensure_no_swap_prompt()
+        \\  local b
+        \\  if type(target) == "number" then
+        \\    b = (target == 0) and vim.api.nvim_get_current_buf() or target
+        \\  elseif type(target) == "string" then
+        \\    if target == "" then
+        \\      b = vim.api.nvim_get_current_buf()
+        \\    else
+        \\      b = vim.fn.bufnr(target)
+        \\      if b == -1 and tonumber(target) then
+        \\        local num = tonumber(target)
+        \\        if vim.api.nvim_buf_is_valid(num) then
+        \\          b = num
+        \\        end
+        \\      end
+        \\    end
+        \\  else
+        \\    return nil, "Expected buffer name or number"
+        \\  end
+        \\  if b == -1 or not vim.api.nvim_buf_is_valid(b) then
+        \\    return nil, "Buffer not found: " .. tostring(target)
+        \\  end
+        \\  if not vim.api.nvim_buf_is_loaded(b) then
+        \\    pcall(vim.fn.bufload, b)
+        \\  end
+        \\  return b
+        \\end
+        \\
+        \\local function find_or_create_buf(target)
+        \\  ensure_no_swap_prompt()
+        \\  local b
+        \\  if type(target) == "number" then
+        \\    b = (target == 0) and vim.api.nvim_get_current_buf() or target
+        \\    if not vim.api.nvim_buf_is_valid(b) then
+        \\      return nil, "Invalid buffer number: " .. tostring(target)
+        \\    end
+        \\  elseif type(target) == "string" then
+        \\    if target == "" then
+        \\      b = vim.api.nvim_get_current_buf()
+        \\    else
+        \\      b = vim.fn.bufnr(target)
+        \\      if b == -1 and tonumber(target) then
+        \\        local num = tonumber(target)
+        \\        if vim.api.nvim_buf_is_valid(num) then
+        \\          b = num
+        \\        end
+        \\      end
+        \\      if b == -1 then
+        \\        b = vim.fn.bufadd(target)
+        \\        pcall(function() vim.bo[b].swapfile = false end)
+        \\        pcall(vim.fn.bufload, b)
+        \\        pcall(function() vim.bo[b].buflisted = true end)
+        \\      end
+        \\    end
+        \\  else
+        \\    return nil, "Expected buffer name or number"
+        \\  end
+        \\  if b == -1 or not vim.api.nvim_buf_is_valid(b) then
+        \\    return nil, "Buffer not found: " .. tostring(target)
+        \\  end
+        \\  if not vim.api.nvim_buf_is_loaded(b) then
+        \\    pcall(vim.fn.bufload, b)
+        \\  end
+        \\  return b
+        \\end
+        \\
+    ;
+
+    const read_full_buf_lua_script = lua_buf_helpers ++
+        \\local target = ...
+        \\local b, err = resolve_buf(target)
+        \\if not b then
+        \\  return { error = err }
+        \\end
+        \\local total = vim.api.nvim_buf_line_count(b)
+        \\local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+        \\local numbered = {}
+        \\for i, l in ipairs(lines) do
+        \\  table.insert(numbered, string.format("%d: %s", i, l))
+        \\end
+        \\return {
+        \\  lines = numbered,
+        \\  total_lines = total,
+        \\}
+    ;
+
+    const read_buf_range_lua_script = lua_buf_helpers ++
+        \\local target, start_line, end_line = ...
+        \\local b, err = resolve_buf(target)
+        \\if not b then
+        \\  return { error = err }
+        \\end
+        \\local total = vim.api.nvim_buf_line_count(b)
+        \\local s = (type(start_line) == "number") and start_line or 1
+        \\local e = (type(end_line) == "number") and end_line or total
+        \\if s > e then s, e = e, s end
+        \\if s < 1 then s = 1 end
+        \\if e > total then e = total end
+        \\if total == 0 or s > total then
+        \\  return { lines = {}, total_lines = total }
+        \\end
+        \\local lines = vim.api.nvim_buf_get_lines(b, s - 1, e, false)
+        \\local numbered = {}
+        \\for i, l in ipairs(lines) do
+        \\  table.insert(numbered, string.format("%d: %s", s + i - 1, l))
+        \\end
+        \\return {
+        \\  lines = numbered,
+        \\  total_lines = total,
+        \\}
+    ;
+
+    const find_and_replace_buf_lua_script = lua_buf_helpers ++
+        \\local target, find_str, replace_str = ...
+        \\if find_str == nil or find_str == "" then
+        \\  return { error = "find string cannot be empty" }
+        \\end
+        \\if replace_str == nil then replace_str = "" end
+        \\local b, err = find_or_create_buf(target)
+        \\if not b then
+        \\  return { error = err }
+        \\end
+        \\local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+        \\local text = table.concat(lines, "\n")
+        \\local s, e = string.find(text, find_str, 1, true)
+        \\if not s then
+        \\  return { error = "find string not found in buffer" }
+        \\end
+        \\if string.find(text, find_str, e + 1, true) then
+        \\  return { error = "find string matches multiple locations; add context to make it unique" }
+        \\end
+        \\local before = text:sub(1, s - 1)
+        \\local start_line = select(2, before:gsub("\n", ""))
+        \\local end_line = start_line + select(2, find_str:gsub("\n", ""))
+        \\local prefix = before:match("[^\n]*$") or ""
+        \\local suffix = (text:sub(e + 1)):match("^[^\n]*") or ""
+        \\local replacement = prefix .. replace_str .. suffix
+        \\local new_lines = vim.split(replacement, "\n", { plain = true })
+        \\vim.api.nvim_buf_set_lines(b, start_line, end_line + 1, false, new_lines)
+        \\return {
+        \\  start_line = start_line + 1,
+        \\  lines_removed = end_line - start_line + 1,
+        \\  lines_added = #new_lines,
+        \\  total_lines = vim.api.nvim_buf_line_count(b),
+        \\}
+    ;
+
+    const write_full_buf_lua_script = lua_buf_helpers ++
+        \\local target, content = ...
+        \\if content == nil then content = "" end
+        \\local b, err = find_or_create_buf(target)
+        \\if not b then
+        \\  return { error = err }
+        \\end
+        \\if content:sub(-1) == "\n" then
+        \\  content = content:sub(1, -2)
+        \\  if content:sub(-1) == "\r" then
+        \\    content = content:sub(1, -2)
+        \\  end
+        \\end
+        \\local new_lines = (content == "") and { "" } or vim.split(content, "\n", { plain = true })
+        \\vim.api.nvim_buf_set_lines(b, 0, -1, false, new_lines)
+        \\return {
+        \\  total_lines = vim.api.nvim_buf_line_count(b),
+        \\}
+    ;
+
     /// Get the current active Buffer.
     pub fn getCurrentBuf(self: *Nvim, arena: std.mem.Allocator) !Buffer {
         const res = try self.client.request(arena, "nvim_get_current_buf", &.{});
