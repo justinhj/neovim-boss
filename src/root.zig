@@ -574,6 +574,22 @@ test "mcp: tool calls write_full_buf and read_full_buf with embedded child nvim"
     try bad_read.put(alloc, "buffer", .{ .integer = 99999 });
     const bad_res = try mcp.tools.callTool(&n_instance, alloc, "read_full_buf", .{ .object = bad_read });
     try std.testing.expectEqual(true, bad_res.isError);
+
+    // 4. Overwrite in background and verify discrete undo
+    var write2_args: std.json.ObjectMap = .empty;
+    try write2_args.put(alloc, "buffer", .{ .string = "test_doc.txt" });
+    try write2_args.put(alloc, "content", .{ .string = "alpha\nbeta\ngamma\n" });
+    _ = try mcp.tools.callTool(&n_instance, alloc, "write_full_buf", .{ .object = write2_args });
+
+    try n_instance.command(alloc, "buffer test_doc.txt");
+    var undo_args: std.json.ObjectMap = .empty;
+    try undo_args.put(alloc, "keys", .{ .string = "u" });
+    _ = try mcp.tools.callTool(&n_instance, alloc, "send_keys", .{ .object = undo_args });
+
+    const undo_read_res = try mcp.tools.callTool(&n_instance, alloc, "read_full_buf", .{ .object = read_args });
+    try std.testing.expectEqual(false, undo_read_res.isError);
+    try std.testing.expect(std.mem.indexOf(u8, undo_read_res.content[0].text, "\"1: line one\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, undo_read_res.content[0].text, "\"3: line three\"") != null);
 }
 
 test "mcp: tool call read_buf_range with embedded child nvim" {

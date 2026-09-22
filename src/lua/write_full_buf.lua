@@ -11,7 +11,12 @@ if content:sub(-1) == "\n" then
   end
 end
 local new_lines = (content == "") and { "" } or vim.split(content, "\n", { plain = true })
-vim.api.nvim_buf_set_lines(b, 0, -1, false, new_lines)
+-- Execute within buffer context and touch &undolevels to force an undo sequence
+-- checkpoint (u_newheader), ensuring discrete undo steps even for background buffers.
+vim.api.nvim_buf_call(b, function()
+  vim.cmd("let &undolevels = &undolevels")
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, new_lines)
+end)
 return {
   total_lines = vim.api.nvim_buf_line_count(b),
 }
