@@ -25,8 +25,8 @@ A high-performance, robust, and strongly-typed **Neovim API client library, MCP 
 
 - **Built-in Model Context Protocol (MCP) Server**:
   - Standards-compliant JSON-RPC 2.0 stdio server implementing the MCP specification.
-  - Exposes state awareness, buffer operations, and execution tools (`get_state_brief`, `get_state`, `read_full_buf`, `read_buf_range`, `find_and_replace_buf`, `write_full_buf`, `exec_lua`, `send_command`, `send_keys`) and resources like `neovim://buffers`.
-  - Exposes resources like `neovim://buffers` for real-time buffer telemetry with detailed metadata.
+  - Exposes state awareness, safe in-memory editing, and execution tools (`get_state_brief`, `get_state`, `read_full_buf`, `read_buf_range`, `find_and_replace_buf`, `write_full_buf`, `exec_lua`, `send_command`, `send_keys`) and real-time buffer telemetry resources (`neovim://buffers`).
+  - Safe in-memory buffer edits with complete Neovim undo tree preservation (`u`) across active and background buffers.
   - Zero external runtimes: compiles to a fast, standalone native binary (`nb`) with instant startup (<1ms).
 - **Fast Single-Round-Trip Buffer Telemetry (`listBufInfo`, `BufferInfo`)**:
   - Bulk query buffer lists enriched with filetype, buftype, flags (`buflisted`, `bufloaded`, `bufmodified`, `hidden`), associated window IDs, line counts, and cursor positions in a single RPC round-trip.
@@ -139,27 +139,56 @@ claude mcp add neovim -- /path/to/neovim-boss/zig-out/bin/nb mcp /tmp/nvim.sock
     - `filetype`: Detected filetype (e.g. `zig`, `markdown`, `lua`)
     - `buftype`: Neovim buffer type (`""`, `help`, `nofile`, `terminal`, etc.)
 
+### Agent Skills & Integration Tests
+
+- **Agent Skill Guide**: An official agent skill is available in [`skills/neovim-boss/SKILL.md`](skills/neovim-boss/SKILL.md). It provides AI coding agents (such as Claude Code, Antigravity, Cursor, etc.) with operational guidelines, tool selection recipes, and safety rules for editing running Neovim sessions.
+- **Autonomous Agent Integration Tests**: Test prompts are provided in [`agent_tests/edit_tools.md`](agent_tests/edit_tools.md) and [`agent_tests/TEST_PROMPT.md`](agent_tests/TEST_PROMPT.md) for end-to-end verification of reading, safe editing, undo behavior, and multi-window navigation.
+
 ---
 
 ## Roadmap
 
-Following the comparative architecture review in `plans/next-steps-based-on-comparison.md`, upcoming releases of `neovim-boss` will expand the MCP toolset and library capabilities across five phases:
+Following the comparative architecture review in [`plans/nvim-mcp-review.md`](plans/nvim-mcp-review.md) and [`plans/tools_sep.md`](plans/tools_sep.md), the capabilities of `neovim-boss` are structured across foundational milestones and upcoming releases:
 
-- **Phase 1: Core Editing & Window Primitives**:
-  - Buffer line manipulation tools (`get_buffer_lines`, `set_buffer_lines`, `open_buffer`, `switch_buffer`).
-  - Cursor navigation & layout control (`get_cursor`, `set_cursor`, `split_window`, `resize_window`).
-- **Phase 2: Safe In-Memory Editing & Situational Awareness**:
-  - Safe search-and-replace (`find_and_replace_buf`) that requires unique substring matches and preserves Neovim's undo history.
-  - Editor orientation snapshots (`get_state_brief`) combining active window context, cursor neighborhood lines, editor mode (`n`, `i`, `v`), and listed buffers.
+### Completed Milestones
+
+- **Phase 1: Core Client Library & Engine**:
+  - High-performance multi-transport connectivity: Unix domain sockets, TCP network sockets, embedded headless child instances (`nvim --embed --headless`), and `stdio`.
+  - Smart connection auto-detection with `$NVIM` socket affinity.
+  - 260+ strongly-typed API wrappers generated directly from bundled `api_info.msgpack`.
+  - Zero-heap extension handles (`Buffer`, `Window`, `Tabpage`).
+  - Bidirectional MessagePack-RPC session with re-entrant reverse RPC handling (`rpcrequest`) and continuous event loop (`runLoop`).
+- **Phase 2: Situational Awareness & Safe In-Memory Editing**:
+  - **Sensory Feedback Loop**: High-speed, single-round-trip orientation snapshots (`get_state_brief` and `get_state`) returning active mode, cwd, listed/modified buffers, visible window bounds, numbered context lines around the cursor, marks, folds, and diagnostics counts.
+  - **Safe In-Memory Editing**: Exact-match substring replacement (`find_and_replace_buf`) that fails safely on missing or ambiguous matches and preserves Neovim's native undo tree (`u`) across active and background buffers.
+  - **Buffer Inspection & Rewriting**: Line-numbered reading (`read_full_buf`, `read_buf_range`) and in-memory full replacement (`write_full_buf`).
+  - **Scripting & Command Execution**: Lean execution suite (`exec_lua`, `send_command`, `send_keys`) replacing thousands of tokens of boilerplate.
+  - **Telemetry Resources**: Live buffer introspection via `neovim://buffers`.
+  - **Embedded Lua Architecture**: Dedicated Lua scripts in `src/lua/` compiled into the binary via `@embedFile`.
+  - **Agent Skills & Autonomous Tests**: Comprehensive skill definition and integration test suites.
+
+### Deliberate Design Streamlining & Omissions
+
+Based on the tools analysis in [`plans/tools_sep.md`](plans/tools_sep.md) and [`plans/test_prompt_ideas.md`](plans/test_prompt_ideas.md):
+- **Zero Companion Plugins**: Unlike other servers requiring Neovim Lua plugins, `neovim-boss` strictly communicates over native RPC sockets out of the box with zero user configuration.
+- **Pruned Redundant Granular Tools**: Rather than exposing dozens of narrow tools (`open_buffer`, `switch_buffer`, `split_window`, `close_window`, `call_function`, `eval_vimscript`, `vim_mark`, `vim_fold`, `vim_tab`), Neovim's existing Ex grammar (`send_command` with `:e`, `:b`, `:split`, `:tabnew`) and keystrokes (`send_keys` with `u`, `ggVG`) already handle over 70% of editor workflows cleanly without schema bloat.
+- **No Direct Shell Execution (`:!cmd`)**: Running arbitrary shell commands via Ex mode was rejected due to security risks; non-stealing terminal job channels are preferred.
+- **No Macro Recording Tools**: Recording/replaying macros via LLMs was rejected as brittle compared to direct text manipulation.
+- **No Connection ID Friction**: Avoided requiring agents to pass session/connection tokens on every tool call in favor of automatic `$NVIM` socket detection.
+
+### Upcoming Releases
+
 - **Phase 3: Visual Annotations & Terminal Channels**:
-  - Extmarks & virtual text (`highlight_range`, `add_virtual_text`, `clear_highlights`) for theme-aware code highlights and inline agent annotations without modifying files on disk.
-  - Non-stealing terminal control (`send_to_terminal`) sending input directly to terminal job channels.
-- **Phase 4: Traditional Vim Primitives & MCP Prompts**:
-  - Register manipulation (`get_register`, `set_register`), marks (`get_marks`, `set_mark`), and Vim regex pattern search (`search_pattern`).
-  - Native MCP Prompts guiding agents on optimal Neovim interaction patterns.
+  - **Extmarks & Highlights**: Theme-aware line highlights (`highlight_range`, `highlight_ranges`, `clear_highlights`) for visual agent communication without altering files on disk.
+  - **Virtual Text Notes**: In-buffer visual comments (`add_virtual_text`, `add_virtual_texts`, `clear_virtual_texts`) positioned inline, above, or below target lines.
+  - **Non-Stealing Terminal Control**: Send commands directly to Neovim terminal job channels (`send_to_terminal`) with review (`submit: false`) or immediate execution (`submit: true`).
+- **Phase 4: Ambient Context Resources & Vim Primitives**:
+  - **Ambient State Resources**: Symbiotic MCP resources (`neovim://state`, `neovim://state/brief`, `neovim://current_buffer`) allowing MCP clients to subscribe to live editor updates.
+  - **Vim Primitives**: Register inspection/manipulation (`get_register`, `set_register`), buffer search (`search_buffer`), and explicit window resizing (`resize_window`).
+  - **MCP Prompts**: Parameterized workflow prompts (`neovim_workflow` / `nb_pair_programming`) guiding agents on optimal Neovim tool chaining.
 - **Phase 5: Code Intelligence & LSP Proxies**:
-  - Direct integration with Neovim's built-in LSP client (`get_diagnostics`, `lsp_definition`, `lsp_references`) via `nvim_exec_lua` without requiring separate companion plugins.
-  - Optional HTTP/SSE transport for remote container pair programming.
+  - **Native LSP Integration**: Proxy Neovim's built-in LSP client via `nvim_exec_lua` calling `vim.lsp.buf_request_sync` (`get_diagnostics`, `lsp_definition`, `lsp_references`, `lsp_hover`) without external plugins.
+  - **HTTP / SSE Transport**: Streamable HTTP and Server-Sent Events transport for remote containers and multi-client pair programming.
 
 ---
 
@@ -316,7 +345,7 @@ The codebase is structured into clear, decoupled layers:
 - **Layer 1: Transport (`src/transport.zig`)**: Abstraction over POSIX file descriptors, Unix domain sockets, TCP network sockets, stdio, and piped child processes.
 - **Layer 2: Serialization (`zig-msgpack`)**: High-performance streaming MessagePack unpacker and zero-copy packer.
 - **Layer 3: RPC Session & Client (`src/client.zig`)**: MessagePack-RPC session tracking message IDs, request-response matching, notification dispatching, and reverse RPC handling.
-- **Layer 4: Neovim Protocol & Types (`src/nvim.zig`, `src/nvim_types.zig`)**: Manages the Neovim handshake (`nvim_set_client_info`), channel metadata, extension type registration, high-level composite queries (`listBufInfo`), and the event loop.
+- **Layer 4: Neovim Protocol & Types (`src/nvim.zig`, `src/nvim_types.zig`, `src/lua/`)**: Manages the Neovim handshake (`nvim_set_client_info`), channel metadata, extension type registration, high-level composite queries (`listBufInfo`, `getState`), compile-time embedded Lua routines (`src/lua/*.lua`), and the event loop.
 - **Layer 5: Generated API (`src/api.zig`)**: 260+ strongly-typed wrapper functions and object methods.
 - **Layer 6: MCP Server & CLI (`src/mcp/`, `src/main.zig`)**: JSON-RPC 2.0 stdio server providing MCP tools (`get_state_brief`, `get_state`, `read_full_buf`, `read_buf_range`, `find_and_replace_buf`, `write_full_buf`, `exec_lua`, `send_command`, `send_keys`) and resources (`neovim://buffers`) with request-scoped arena allocation.
 
@@ -334,6 +363,12 @@ Neovim represents remote references (`Buffer`, `Window`, `Tabpage`) as MessagePa
 
 ### 5. Decoupled Build-Time Codegen
 Neovim's API schema is extracted via `nvim --api-info` and bundled in `data/api_info.msgpack`. The codegen tool parses this file to produce native Zig types, enabling clean builds in hermetic CI environments without requiring Neovim installed on the build machine.
+
+### 6. Undo-Safe In-Memory Buffer Modifications
+All buffer mutation tools (`find_and_replace_buf`, `write_full_buf`) operate directly in memory without touching disk. Modifications preserve Neovim's native undo tree (`u`) across both foreground and background buffers (using window-targeted edits and `undojoin`), allowing the user or agent to immediately revert changes cleanly.
+
+### 7. Compile-Time Embedded Lua Scripts
+Complex multi-step editor operations (such as deep state snapshots, boundary-safe line reading, and undo-safe buffer rewriting) are implemented as dedicated Lua scripts in `src/lua/` and embedded directly into the executable using `@embedFile`. This achieves maximum maintainability, modular testing, and zero runtime disk I/O.
 
 ---
 
