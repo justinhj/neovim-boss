@@ -35,8 +35,11 @@ A high-performance, robust, and strongly-typed **Neovim API client library, MCP 
   - **TCP Sockets**: Connect across local or remote networks (`nvim --listen 127.0.0.1:6666`).
   - **Child Process Embedding**: Automatically spawn and supervise headless child instances (`nvim --embed --headless`).
   - **Standard I/O (`stdio`)**: Run directly as a coprocess or embedded plugin filter.
-- **Smart Connection Auto-Detection**:
-  - `neovim_boss.attachAddress(allocator, io, target)` and the `nb` CLI automatically route to child, stdio, TCP (`host:port`), or Unix domain socket paths, and auto-detect the active `$NVIM` socket when run inside Neovim.
+- **Smart Connection & Project Socket Auto-Detection**:
+  - Automatically discovers running Neovim instances across `$TMPDIR`, `$XDG_RUNTIME_DIR`, `/tmp`, and project folders.
+  - Matches Neovim's active working directory and Git repository root to the agent's project workspace with **zero Neovim plugins required**.
+  - Dedicated `nb detect [dir]` CLI command to inspect, probe, and troubleshoot running Neovim sessions.
+  - Also routes to child embedded Neovims (`child`), standard I/O (`stdio`), TCP (`host:port`), or Unix domain socket paths, and auto-detects active `$NVIM` sockets inside `:terminal`.
 - **Strongly-Typed API Code Generation (260+ functions)**:
   - Generates typesafe wrappers for the entire Neovim API directly from Neovim's `api_info` schema.
   - Automatic parameter packing and return value decoding.
@@ -60,27 +63,65 @@ A high-performance, robust, and strongly-typed **Neovim API client library, MCP 
 
 ### Running the MCP Server (`nb mcp`)
 
+`neovim-boss` features **zero-config socket auto-detection**: it automatically discovers running Neovim instances on your machine and connects to the one editing the same workspace or Git repository as your agent—no companion plugins or manual socket arguments required!
+
 ```bash
 # Build the nb binary
 zig build -Doptimize=ReleaseFast
 
-# 1. Connect to an existing Neovim instance via Unix socket:
+# 1. Zero-config auto-detection (connects to the Neovim editing the current project folder):
+./zig-out/bin/nb mcp
+# Or explicitly:
+./zig-out/bin/nb mcp detect
+
+# 2. Inspect running Neovim instances from the CLI without starting MCP:
+./zig-out/bin/nb detect
+./zig-out/bin/nb detect /path/to/another/project
+
+# 3. Connect to an explicit Unix domain socket path:
 ./zig-out/bin/nb mcp /tmp/nvim.sock
 
-# 2. Connect via TCP network socket:
+# 4. Connect via TCP network socket:
 ./zig-out/bin/nb mcp 127.0.0.1:6666
 
-# 3. Automatically spawn and supervise a headless child Neovim instance:
+# 5. Automatically spawn and supervise a headless child Neovim instance:
 ./zig-out/bin/nb mcp child
-
-# 4. Auto-detect from environment (inside a Neovim :terminal session):
-./zig-out/bin/nb mcp
 ```
 
 > [!TIP]
-> When running inside a Neovim `:terminal` buffer, Neovim automatically sets the `$NVIM` environment variable pointing to the active RPC socket. Simply invoking `nb mcp` will attach to your current editor session without any manual socket configuration!
+> **How Auto-Detection Works**:
+> When invoked without arguments (or with `detect`), `nb` first checks if `$NVIM` is set (e.g. inside an embedded Neovim `:terminal` session). If not, it probes active sockets in `$TMPDIR`, `$XDG_RUNTIME_DIR`, `/tmp`, and the local project directory. It performs a fast MessagePack-RPC handshake to query each instance's working directory (`getcwd()`), process ID (`getpid()`), and active file, then connects to the instance matching your current workspace or Git repository root.
+
+### Inspecting Running Instances (`nb detect`)
+
+You can run `nb detect` at any time to troubleshoot connections, check active buffers, and see which Neovim instance matches your directory:
+
+```bash
+$ nb detect
+Detecting Neovim instances for:
+  Directory: /Users/justinhj/projects/neovim-boss
+  Git Root:  /Users/justinhj/projects/neovim-boss
+
+✓ MATCH FOUND (exact match):
+    Socket:       /private/tmp/poopy.sock
+    PID:          73288
+    CWD:          /Users/justinhj/projects/neovim-boss
+    Server Name:  /tmp/poopy.sock
+
+All active Neovim instances (4):
+  1.     PID  47138 | CWD: /Users/justinhj/projects/bst-blog
+        Socket: /private/var/folders/.../nvim.47138.0
+        File:   /Users/justinhj/projects/bst-blog/src/root.zig
+  2.     PID  28108 | CWD: /Users/justinhj/projects/leetcode
+        Socket: /private/var/folders/.../nvim.28108.0
+        File:   /Users/justinhj/projects/leetcode/main.py
+  3. [*] PID  73288 | CWD: /Users/justinhj/projects/neovim-boss
+        Socket: /private/tmp/poopy.sock
+```
 
 ### Configuring with MCP Clients
+
+Because `neovim-boss` automatically finds the Neovim session for your project, you **do not** need to hardcode a fixed socket path into your configuration. Simply configure `nb mcp`:
 
 #### Claude Desktop
 Add `neovim-boss` to your `claude_desktop_config.json`:
@@ -90,17 +131,33 @@ Add `neovim-boss` to your `claude_desktop_config.json`:
   "mcpServers": {
     "neovim": {
       "command": "/path/to/neovim-boss/zig-out/bin/nb",
-      "args": ["mcp", "/tmp/nvim.sock"]
+      "args": ["mcp"]
     }
   }
 }
 ```
 
+*(You can still specify an explicit socket like `["mcp", "/tmp/nvim.sock"]` if you wish to override auto-detection).*
+
 #### Claude Code
 Add to your project's `.mcp.json` or register via the CLI:
 
 ```bash
-claude mcp add neovim -- /path/to/neovim-boss/zig-out/bin/nb mcp /tmp/nvim.sock
+claude mcp add neovim -- /path/to/neovim-boss/zig-out/bin/nb mcp
+```
+
+#### Cursor / Antigravity / OpenCode
+Add to your MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "neovim-boss": {
+      "command": "/path/to/neovim-boss/zig-out/bin/nb",
+      "args": ["mcp"]
+    }
+  }
+}
 ```
 
 ### Supported MCP Capabilities

@@ -41,6 +41,13 @@ pub const api = @import("api.zig");
 pub const Api = api.Api;
 
 pub const mcp = @import("mcp.zig");
+pub const discovery = @import("discovery.zig");
+pub const NvimInstance = discovery.NvimInstance;
+pub const MatchScore = discovery.MatchScore;
+pub const findGitRoot = discovery.findGitRoot;
+pub const findBestMatch = discovery.findBestMatch;
+pub const discoverAllInstances = discovery.discoverAllInstances;
+pub const probeSocket = discovery.probeSocket;
 
 pub const AttachTarget = union(enum) {
     socket: []const u8,
@@ -74,6 +81,16 @@ pub fn attachAddress(allocator: std.mem.Allocator, io: std.Io, address: []const 
     if (std.mem.eql(u8, address, "stdio")) {
         return attach(allocator, io, .stdio);
     }
+    if (std.mem.eql(u8, address, "detect")) {
+        const cwd = std.process.currentPathAlloc(io, allocator) catch return error.ConnectionFailed;
+        defer allocator.free(cwd);
+        var disc = try discovery.findBestMatch(allocator, io, cwd);
+        defer disc.deinit(allocator);
+        if (disc.best_match) |match| {
+            return attach(allocator, io, .{ .socket = match.socket_path });
+        }
+        return error.ConnectionFailed;
+    }
     if (!std.mem.startsWith(u8, address, "/") and !std.mem.startsWith(u8, address, ".")) {
         if (std.mem.lastIndexOfScalar(u8, address, ':')) |colon_idx| {
             const host = address[0..colon_idx];
@@ -94,6 +111,7 @@ test {
     _ = object_util;
     _ = nvim;
     _ = mcp;
+    _ = discovery;
 }
 
 test "root: attach embedded child nvim" {
