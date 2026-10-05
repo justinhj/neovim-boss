@@ -274,6 +274,7 @@ test "root: runLoop with deferred notification" {
     defer n_instance.deinit();
 
     const NotifCtx = struct {
+        received_method_buf: [32]u8 = undefined,
         received_method: ?[]const u8 = null,
         received_arg: ?i64 = null,
         nvim: *Nvim,
@@ -281,7 +282,11 @@ test "root: runLoop with deferred notification" {
         fn handleNotification(user_data: ?*anyopaque, notif: msgpack.RpcNotification) void {
             const ctx: *@This() = @ptrCast(@alignCast(user_data.?));
             if (std.mem.eql(u8, notif.method, "async_event")) {
-                ctx.received_method = notif.method;
+                // notif.method points into runLoop's per-iteration arena,
+                // which is freed when the loop exits; copy it into
+                // test-owned memory before returning.
+                @memcpy(ctx.received_method_buf[0..notif.method.len], notif.method);
+                ctx.received_method = ctx.received_method_buf[0..notif.method.len];
                 if (notif.params.len > 0 and notif.params[0] == .integer) {
                     ctx.received_arg = notif.params[0].integer;
                 }
