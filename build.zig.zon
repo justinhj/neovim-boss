@@ -25,7 +25,7 @@
     .fingerprint = 0xb8b3e10a64cbff37, // Changing this has security and trust implications.
     // Tracks the earliest Zig version that the package considers to be a
     // supported use case.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
     // `zig build --fetch` can be used to fetch all dependencies of a package, recursively.
@@ -34,7 +34,7 @@
     .dependencies = .{
         .zig_msgpack = .{
             .url = "https://github.com/justinhj/zig-msgpack/archive/master.tar.gz",
-            .hash = "zig_msgpack-0.0.1-JYOKde99AgAQ2rcZ2ZlyYnOTxjQpghkp6Oa5I8YUpPeW",
+            .hash = "zig_msgpack-0.0.1-JYOKdTKBAgCcuohtoEB2rUdUdc1Ze7ooyyXEQYt3nHNX",
         },
     },
     .paths = .{
