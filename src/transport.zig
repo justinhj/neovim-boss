@@ -134,9 +134,8 @@ pub const Transport = struct {
         if (self.read_fd < 0) return TransportError.ReadFailed;
         if (buffer.len == 0) return 0;
 
-        const n = std.c.read(self.read_fd, buffer.ptr, buffer.len);
-        if (n < 0) return TransportError.ReadFailed;
-        return @intCast(n);
+        const n = std.posix.read(self.read_fd, buffer) catch return TransportError.ReadFailed;
+        return n;
     }
 
     /// Write all bytes to the transport, looping on partial writes.
@@ -144,9 +143,14 @@ pub const Transport = struct {
         if (self.write_fd < 0) return TransportError.WriteFailed;
         var index: usize = 0;
         while (index < bytes.len) {
-            const n = std.c.write(self.write_fd, bytes[index..].ptr, bytes.len - index);
-            if (n <= 0) return TransportError.WriteFailed;
-            index += @intCast(n);
+            const rc = std.posix.system.write(self.write_fd, bytes[index..].ptr, bytes.len - index);
+            const n: usize = switch (std.posix.errno(rc)) {
+                .SUCCESS => @intCast(rc),
+                .INTR => continue,
+                else => return TransportError.WriteFailed,
+            };
+            if (n == 0) return TransportError.WriteFailed;
+            index += n;
         }
     }
 
@@ -175,10 +179,10 @@ pub const Transport = struct {
 
         // Only close if not standard streams (0, 1, 2)
         if (self.read_fd > 2) {
-            _ = std.c.close(self.read_fd);
+            _ = std.posix.system.close(self.read_fd);
         }
         if (self.write_fd > 2 and self.write_fd != self.read_fd) {
-            _ = std.c.close(self.write_fd);
+            _ = std.posix.system.close(self.write_fd);
         }
         self.read_fd = -1;
         self.write_fd = -1;
@@ -191,8 +195,8 @@ pub const Transport = struct {
 
 test "transport: socketpair read and writeAll" {
     var fds: [2]std.posix.fd_t = undefined;
-    const rc = std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &fds);
-    try std.testing.expectEqual(@as(c_int, 0), rc);
+    const rc = std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds);
+    try std.testing.expectEqual(@as(usize, 0), rc);
 
     var client_t = Transport.fromFd(fds[0]);
     defer client_t.close();

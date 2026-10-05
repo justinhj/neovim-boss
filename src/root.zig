@@ -274,6 +274,7 @@ test "root: runLoop with deferred notification" {
     defer n_instance.deinit();
 
     const NotifCtx = struct {
+        received_method_buf: [32]u8 = undefined,
         received_method: ?[]const u8 = null,
         received_arg: ?i64 = null,
         nvim: *Nvim,
@@ -281,7 +282,11 @@ test "root: runLoop with deferred notification" {
         fn handleNotification(user_data: ?*anyopaque, notif: msgpack.RpcNotification) void {
             const ctx: *@This() = @ptrCast(@alignCast(user_data.?));
             if (std.mem.eql(u8, notif.method, "async_event")) {
-                ctx.received_method = notif.method;
+                // notif.method points into runLoop's per-iteration arena,
+                // which is freed when the loop exits; copy it into
+                // test-owned memory before returning.
+                @memcpy(ctx.received_method_buf[0..notif.method.len], notif.method);
+                ctx.received_method = ctx.received_method_buf[0..notif.method.len];
                 if (notif.params.len > 0 and notif.params[0] == .integer) {
                     ctx.received_arg = notif.params[0].integer;
                 }
@@ -743,10 +748,10 @@ test "mcp: server handleLine protocol requests" {
 
     var server = mcp.Server.init(allocator, io, &n_instance);
 
-    var pipe_fds: [2]c_int = undefined;
-    if (std.c.pipe(&pipe_fds) != 0) return error.PipeFailed;
-    defer _ = std.c.close(pipe_fds[0]);
-    defer _ = std.c.close(pipe_fds[1]);
+    var pipe_fds: [2]std.posix.fd_t = undefined;
+    if (std.posix.errno(std.posix.system.pipe(&pipe_fds)) != .SUCCESS) return error.PipeFailed;
+    defer _ = std.posix.system.close(pipe_fds[0]);
+    defer _ = std.posix.system.close(pipe_fds[1]);
 
     server.stdout_fd = pipe_fds[1];
 
@@ -759,10 +764,10 @@ test "mcp: server handleLine protocol requests" {
     try server.handleLine(alloc, init_req);
 
     var out_buf: [2048]u8 = undefined;
-    const n = std.c.read(pipe_fds[0], &out_buf, out_buf.len);
+    const n = try std.posix.read(pipe_fds[0], &out_buf);
     try std.testing.expect(n > 0);
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, out_buf[0..@intCast(n)], .{});
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, out_buf[0..n], .{});
     try std.testing.expectEqual(@as(i64, 100), parsed.value.object.get("id").?.integer);
     const result_obj = parsed.value.object.get("result").?.object;
     try std.testing.expectEqualStrings("2024-11-05", result_obj.get("protocolVersion").?.string);

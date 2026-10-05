@@ -500,8 +500,8 @@ test "nvim: handshake and convenience methods" {
     const allocator = std.testing.allocator;
 
     var fds: [2]std.posix.fd_t = undefined;
-    const rc = std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &fds);
-    try std.testing.expectEqual(@as(c_int, 0), rc);
+    const rc = std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds);
+    try std.testing.expectEqual(@as(usize, 0), rc);
 
     var server_transport = Transport.fromFd(fds[1]);
     defer server_transport.close();

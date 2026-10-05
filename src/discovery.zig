@@ -156,9 +156,37 @@ pub fn scorePathMatch(
     return .none;
 }
 
-fn getEnv(key: [*:0]const u8) ?[:0]const u8 {
-    if (std.c.getenv(key)) |ptr| {
-        return std.mem.sliceTo(ptr, 0);
+/// Get an environment variable without libc. On Linux reads the
+/// environment block directly from /proc/self/environ.
+/// Returns an allocated copy; caller must free. Null on non-Linux or if unset.
+fn getEnv(io: Io, allocator: Allocator, key: [*:0]const u8) !?[]u8 {
+    if (builtin.os.tag != .linux) return null;
+    const key_slice = std.mem.sliceTo(key, 0);
+
+    var file = Io.Dir.openFileAbsolute(io, "/proc/self/environ", .{}) catch return null;
+    defer file.close(io);
+
+    // /proc/self/environ is null-separated KEY=VALUE entries; 16KB is plenty.
+    var buf: [16384]u8 = undefined;
+    var file_reader = file.reader(io, &buf);
+    var n: usize = 0;
+    while (n < buf.len) {
+        const chunk = file_reader.interface.readSliceShort(buf[n..]) catch return null;
+        if (chunk == 0) break;
+        n += chunk;
+    }
+
+    var pos: usize = 0;
+    while (pos < n) {
+        const entry_end = std.mem.indexOfScalarPos(u8, buf[0..n], pos, 0) orelse n;
+        const entry = buf[pos..entry_end];
+        if (entry.len > key_slice.len and
+            std.mem.eql(u8, entry[0..key_slice.len], key_slice) and
+            entry[key_slice.len] == '=')
+        {
+            return try allocator.dupe(u8, entry[key_slice.len + 1 ..]);
+        }
+        pos = entry_end + 1;
     }
     return null;
 }
@@ -181,7 +209,7 @@ fn connectUnixProbe(socket_path: []const u8) ?Transport {
     const socket_rc = std.posix.system.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0);
     if (std.posix.errno(socket_rc) != .SUCCESS) return null;
     const fd: std.posix.fd_t = @intCast(socket_rc);
-    errdefer _ = std.c.close(fd);
+    errdefer _ = std.posix.system.close(fd);
 
     var addr: std.posix.sockaddr.un = .{
         .family = std.posix.AF.UNIX,
@@ -345,7 +373,8 @@ pub fn findCandidateSockets(
     // 2. Check environment variable overrides
     const env_vars = [_][*:0]const u8{ "NVIM", "NVIM_SOCKET_PATH", "NVIM_ADDRESS" };
     for (env_vars) |var_name| {
-        if (getEnv(var_name)) |val| {
+        if (try getEnv(io, allocator, var_name)) |val| {
+            defer allocator.free(val);
             if (val.len > 0 and (val[0] == '/' or val[0] == '.')) {
                 const canon = canonicalizePath(allocator, io, val);
                 if (Io.Dir.accessAbsolute(io, canon, .{})) |_| {
@@ -364,10 +393,17 @@ pub fn findCandidateSockets(
     var search_dirs: std.ArrayList([]const u8) = .empty;
     defer search_dirs.deinit(allocator);
 
-    if (getEnv("TMPDIR")) |tmp| {
+    // Env-sourced dirs are allocated; freed after the scan loop below.
+    var tmp_dir: ?[]u8 = null;
+    defer if (tmp_dir) |t| allocator.free(t);
+    var xdg_dir: ?[]u8 = null;
+    defer if (xdg_dir) |x| allocator.free(x);
+    if (try getEnv(io, allocator, "TMPDIR")) |tmp| {
+        tmp_dir = tmp;
         try search_dirs.append(allocator, tmp);
     }
-    if (getEnv("XDG_RUNTIME_DIR")) |xdg| {
+    if (try getEnv(io, allocator, "XDG_RUNTIME_DIR")) |xdg| {
+        xdg_dir = xdg;
         try search_dirs.append(allocator, xdg);
     }
     try search_dirs.append(allocator, "/tmp");

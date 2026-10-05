@@ -32,16 +32,13 @@ pub const Server = struct {
         var chunk: [4096]u8 = undefined;
 
         while (self.is_running) {
-            const n = std.c.read(self.stdin_fd, &chunk, chunk.len);
+            const n = std.posix.read(self.stdin_fd, &chunk) catch return error.ReadFailed;
             if (n == 0) {
                 // EOF reached
                 break;
-            } else if (n < 0) {
-                return error.ReadFailed;
             }
 
-            const bytes_read: usize = @intCast(n);
-            try read_buffer.appendSlice(self.allocator, chunk[0..bytes_read]);
+            try read_buffer.appendSlice(self.allocator, chunk[0..n]);
 
             // Process all complete lines in read_buffer
             while (true) {
@@ -336,9 +333,14 @@ pub const Server = struct {
     fn writeAll(self: *Server, bytes: []const u8) !void {
         var index: usize = 0;
         while (index < bytes.len) {
-            const n = std.c.write(self.stdout_fd, bytes[index..].ptr, bytes.len - index);
-            if (n <= 0) return error.WriteFailed;
-            index += @intCast(n);
+            const rc = std.posix.system.write(self.stdout_fd, bytes[index..].ptr, bytes.len - index);
+            const n: usize = switch (std.posix.errno(rc)) {
+                .SUCCESS => @intCast(rc),
+                .INTR => continue,
+                else => return error.WriteFailed,
+            };
+            if (n == 0) return error.WriteFailed;
+            index += n;
         }
     }
 };

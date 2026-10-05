@@ -109,9 +109,7 @@ pub fn build(b: *std.Build) void {
 
     // This allows the user to pass arguments to the application in the build
     // command itself, like this: `zig build run -- arg1 arg2 etc`
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     // Basic example
     const basic_example = b.addExecutable(.{
@@ -129,9 +127,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(basic_example);
 
     const run_basic_cmd = b.addRunArtifact(basic_example);
-    if (b.args) |args| {
-        run_basic_cmd.addArgs(args);
-    }
+    run_basic_cmd.addPassthruArgs();
     const run_basic_step = b.step("run-basic", "Run the basic example (requires running nvim --listen <sock>)");
     run_basic_step.dependOn(&run_basic_cmd.step);
 
@@ -151,9 +147,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(phase2_example);
 
     const run_phase2_cmd = b.addRunArtifact(phase2_example);
-    if (b.args) |args| {
-        run_phase2_cmd.addArgs(args);
-    }
+    run_phase2_cmd.addPassthruArgs();
     const run_phase2_step = b.step("run-phase2", "Run the phase 2 demo (requires running nvim --listen <sock>)");
     run_phase2_step.dependOn(&run_phase2_cmd.step);
 
@@ -173,9 +167,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(embed_example);
 
     const run_embed_cmd = b.addRunArtifact(embed_example);
-    if (b.args) |args| {
-        run_embed_cmd.addArgs(args);
-    }
+    run_embed_cmd.addPassthruArgs();
     const run_embed_step = b.step("run-embed", "Run the embed example (spawns headless nvim automatically)");
     run_embed_step.dependOn(&run_embed_cmd.step);
 
@@ -195,9 +187,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(phase4_example);
 
     const run_phase4_cmd = b.addRunArtifact(phase4_example);
-    if (b.args) |args| {
-        run_phase4_cmd.addArgs(args);
-    }
+    run_phase4_cmd.addPassthruArgs();
     const run_phase4_step = b.step("run-phase4", "Run the phase 4 demo (tests generated typed Neovim API)");
     run_phase4_step.dependOn(&run_phase4_cmd.step);
 
@@ -217,9 +207,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(phase5_example);
 
     const run_phase5_cmd = b.addRunArtifact(phase5_example);
-    if (b.args) |args| {
-        run_phase5_cmd.addArgs(args);
-    }
+    run_phase5_cmd.addPassthruArgs();
     const run_phase5_step = b.step("run-phase5", "Run the phase 5 demo (notifications, reverse RPC, event loop)");
     run_phase5_step.dependOn(&run_phase5_cmd.step);
 
@@ -238,9 +226,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(codegen_exe);
 
     const run_codegen_cmd = b.addRunArtifact(codegen_exe);
-    if (b.args) |args| {
-        run_codegen_cmd.addArgs(args);
-    }
+    run_codegen_cmd.addPassthruArgs();
     const generate_api_step = b.step("generate-api", "Generate Zig API bindings from data/api_info.msgpack");
     generate_api_step.dependOn(&run_codegen_cmd.step);
 

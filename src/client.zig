@@ -251,8 +251,8 @@ test "client: roundtrip request and response" {
     const allocator = std.testing.allocator;
 
     var fds: [2]std.posix.fd_t = undefined;
-    const rc = std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &fds);
-    try std.testing.expectEqual(@as(c_int, 0), rc);
+    const rc = std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds);
+    try std.testing.expectEqual(@as(usize, 0), rc);
 
     var client = try Client.init(allocator, Transport.fromFd(fds[0]));
     defer client.deinit();
@@ -313,8 +313,8 @@ test "client: notification dispatch mid-wait" {
     const allocator = std.testing.allocator;
 
     var fds: [2]std.posix.fd_t = undefined;
-    const rc = std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &fds);
-    try std.testing.expectEqual(@as(c_int, 0), rc);
+    const rc = std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds);
+    try std.testing.expectEqual(@as(usize, 0), rc);
 
     var client = try Client.init(allocator, Transport.fromFd(fds[0]));
     defer client.deinit();
@@ -389,8 +389,8 @@ test "client: rpc error response handling" {
     const allocator = std.testing.allocator;
 
     var fds: [2]std.posix.fd_t = undefined;
-    const rc = std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &fds);
-    try std.testing.expectEqual(@as(c_int, 0), rc);
+    const rc = std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds);
+    try std.testing.expectEqual(@as(usize, 0), rc);
 
     var client = try Client.init(allocator, Transport.fromFd(fds[0]));
     defer client.deinit();
