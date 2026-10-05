@@ -407,7 +407,7 @@ The codebase is structured into clear, decoupled layers:
 - **Layer 6: MCP Server & CLI (`src/mcp/`, `src/main.zig`)**: JSON-RPC 2.0 stdio server providing MCP tools (`get_state_brief`, `get_state`, `read_full_buf`, `read_buf_range`, `find_and_replace_buf`, `write_full_buf`, `exec_lua`, `send_command`, `send_keys`) and resources (`neovim://buffers`) with request-scoped arena allocation.
 
 ### 2. Synchronous RPC with Re-Entrant Reverse Handling
-Zig 0.16 currently lacks a finalized language-level async/await story. `neovim-boss` adopts a blocking, synchronous model for outgoing requests while safely handling interleaved notifications and reverse RPC requests (`rpcrequest()`). If Neovim calls back into the client while processing a command, the request handler executes re-entrantly and transmits the response without deadlocking.
+`neovim-boss` adopts a blocking, synchronous model for outgoing requests while safely handling interleaved notifications and reverse RPC requests (`rpcrequest()`). If Neovim calls back into the client while processing a command, the request handler executes re-entrantly and transmits the response without deadlocking.
 
 ### 3. Arena Allocation Strategy
 MessagePack objects form arbitrarily nested trees (strings, arrays, maps). Rather than allocating individual nodes on the heap and tracking manual frees:
