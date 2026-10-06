@@ -15,7 +15,9 @@
 
 Neovim-boss's mascot En-Bee.
 
-A high-performance, robust, and strongly-typed **Neovim API client library, MCP server and CLI** for [Zig](https://ziglang.org) (v0.16.0+), built on [`justinhj/zig-msgpack`](https://github.com/justinhj/zig-msgpack).
+A high-performance, robust, and strongly-typed **Neovim API client library, MCP server and CLI** for [Zig](https://ziglang.org) (v0.17.0+), built on [`justinhj/zig-msgpack`](https://github.com/justinhj/zig-msgpack).
+
+For earlier versions of Zig check for tagged commits. Generally main branch will be targetting the most recent release version of Zig. 
 
 `neovim-boss` provides complete programmatic control over running or embedded Neovim instances via MessagePack-RPC. It is designed both as a standalone library for Zig applications and as a native **Neovim Model Context Protocol (MCP) server**, allowing AI agents and LLM tools (such as Claude Desktop, Claude Code, Cursor, and OpenCode) to introspect, query, and interact with your editor in real time.
 
@@ -434,3 +436,4 @@ Complex multi-step editor operations (such as deep state snapshots, boundary-saf
 MIT License. See [LICENSE](LICENSE) for details.
 
 Copyright 2026 Justin Heyes-Jones
+# mazegen
