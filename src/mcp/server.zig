@@ -5,11 +5,13 @@ const types = @import("types.zig");
 const tools = @import("tools.zig");
 const resources = @import("resources.zig");
 const root = @import("../root.zig");
+const buffer_cache = @import("buffer_cache.zig");
 
 pub const Server = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     nvim: *Nvim,
+    buffer_cache: buffer_cache.BufferCache,
     stdin_fd: std.posix.fd_t = std.posix.STDIN_FILENO,
     stdout_fd: std.posix.fd_t = std.posix.STDOUT_FILENO,
     is_running: bool = false,
@@ -19,6 +21,7 @@ pub const Server = struct {
             .allocator = allocator,
             .io = io,
             .nvim = nvim,
+            .buffer_cache = buffer_cache.BufferCache.init(allocator, nvim),
         };
     }
 
@@ -271,7 +274,7 @@ pub const Server = struct {
             return self.sendError(arena, id, types.ErrorCode.invalid_params, "uri must be a string");
         }
 
-        const read_res = resources.readResource(self.nvim, arena, uri_val.string) catch |err| {
+        const read_res = resources.readResource(&self.buffer_cache, arena, uri_val.string) catch |err| {
             const err_msg = try std.fmt.allocPrint(arena, "Failed to read resource: {s}", .{@errorName(err)});
             return self.sendError(arena, id, types.ErrorCode.internal_error, err_msg);
         };
