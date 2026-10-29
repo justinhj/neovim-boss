@@ -176,17 +176,18 @@ fn setSocketTimeout(fd: std.posix.fd_t, timeout_ms: u32) void {
 
 fn connectUnixProbe(socket_path: []const u8) ?Transport {
     if (builtin.os.tag == .windows) return null;
-    if (socket_path.len >= 104) return null;
+
+    var addr: std.posix.sockaddr.un = .{
+        .family = std.posix.AF.UNIX,
+        .path = undefined,
+    };
+    if (socket_path.len >= addr.path.len) return null;
 
     const socket_rc = std.posix.system.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0);
     if (std.posix.errno(socket_rc) != .SUCCESS) return null;
     const fd: std.posix.fd_t = @intCast(socket_rc);
     errdefer _ = std.c.close(fd);
 
-    var addr: std.posix.sockaddr.un = .{
-        .family = std.posix.AF.UNIX,
-        .path = undefined,
-    };
     @memcpy(addr.path[0..socket_path.len], socket_path);
     addr.path[socket_path.len] = 0;
     const addr_len: std.posix.socklen_t = @intCast(@offsetOf(std.posix.sockaddr.un, "path") + socket_path.len + 1);
@@ -257,6 +258,34 @@ pub fn probeSocket(
     };
 }
 
+/// Deduplicate by resolved path, but connect using the shortest discovered alias.
+/// On macOS, resolving /var to /private/var can exceed the socket address buffer.
+fn addCandidateSocket(
+    allocator: Allocator,
+    socket_path: []const u8,
+    canonical_path: []const u8,
+    candidates: *std.ArrayList([]const u8),
+    seen: *std.StringHashMapUnmanaged(usize),
+) !void {
+    if (seen.get(canonical_path)) |index| {
+        if (socket_path.len < candidates.items[index].len) {
+            const saved = try allocator.dupe(u8, socket_path);
+            allocator.free(candidates.items[index]);
+            candidates.items[index] = saved;
+        }
+        return;
+    }
+
+    const saved = try allocator.dupe(u8, socket_path);
+    errdefer allocator.free(saved);
+    const key = try allocator.dupe(u8, canonical_path);
+    errdefer allocator.free(key);
+
+    try candidates.ensureUnusedCapacity(allocator, 1);
+    try seen.put(allocator, key, candidates.items.len);
+    candidates.appendAssumeCapacity(saved);
+}
+
 fn scanDirRecursive(
     allocator: Allocator,
     io: Io,
@@ -264,7 +293,7 @@ fn scanDirRecursive(
     depth: usize,
     max_depth: usize,
     candidates: *std.ArrayList([]const u8),
-    seen: *std.StringHashMapUnmanaged(void),
+    seen: *std.StringHashMapUnmanaged(usize),
 ) void {
     if (depth > max_depth) return;
 
@@ -286,11 +315,7 @@ fn scanDirRecursive(
             if (is_nvim_candidate) {
                 const full_path = std.fs.path.join(allocator, &.{ dir_path, entry.name }) catch continue;
                 const canon = canonicalizePath(allocator, io, full_path);
-                if (!seen.contains(canon)) {
-                    const saved = allocator.dupe(u8, canon) catch continue;
-                    seen.put(allocator, saved, {}) catch continue;
-                    candidates.append(allocator, saved) catch continue;
-                }
+                addCandidateSocket(allocator, full_path, canon, candidates, seen) catch {};
                 if (canon.ptr != full_path.ptr) allocator.free(canon);
                 allocator.free(full_path);
             }
@@ -321,24 +346,25 @@ pub fn findCandidateSockets(
 ) ![][]const u8 {
     var candidates: std.ArrayList([]const u8) = .empty;
     defer candidates.deinit(allocator);
-    var seen: std.StringHashMapUnmanaged(void) = .empty;
-    defer seen.deinit(allocator);
+    errdefer for (candidates.items) |candidate| allocator.free(candidate);
+    var seen: std.StringHashMapUnmanaged(usize) = .empty;
+    defer {
+        var keys = seen.keyIterator();
+        while (keys.next()) |key| allocator.free(key.*);
+        seen.deinit(allocator);
+    }
 
     // 1. Check project folder for local socket overrides (e.g. ./nvim.sock, ./.nvim.sock)
     if (project_dir) |pdir| {
         const local_names = [_][]const u8{ "nvim.sock", ".nvim.sock" };
         for (local_names) |name| {
             const full = std.fs.path.join(allocator, &.{ pdir, name }) catch continue;
+            defer allocator.free(full);
             const canon = canonicalizePath(allocator, io, full);
+            defer if (canon.ptr != full.ptr) allocator.free(canon);
             if (Io.Dir.accessAbsolute(io, canon, .{})) |_| {
-                if (!seen.contains(canon)) {
-                    const saved = try allocator.dupe(u8, canon);
-                    try seen.put(allocator, saved, {});
-                    try candidates.append(allocator, saved);
-                }
+                try addCandidateSocket(allocator, full, canon, &candidates, &seen);
             } else |_| {}
-            if (canon.ptr != full.ptr) allocator.free(canon);
-            allocator.free(full);
         }
     }
 
@@ -348,14 +374,10 @@ pub fn findCandidateSockets(
         if (getEnv(var_name)) |val| {
             if (val.len > 0 and (val[0] == '/' or val[0] == '.')) {
                 const canon = canonicalizePath(allocator, io, val);
+                defer if (canon.ptr != val.ptr) allocator.free(canon);
                 if (Io.Dir.accessAbsolute(io, canon, .{})) |_| {
-                    if (!seen.contains(canon)) {
-                        const duped = try allocator.dupe(u8, canon);
-                        try seen.put(allocator, duped, {});
-                        try candidates.append(allocator, duped);
-                    }
+                    try addCandidateSocket(allocator, val, canon, &candidates, &seen);
                 } else |_| {}
-                if (canon.ptr != val.ptr) allocator.free(canon);
             }
         }
     }
@@ -426,8 +448,8 @@ pub const DiscoveryResult = struct {
 
 fn compareInstances(target_canon: []const u8, a: NvimInstance, b: NvimInstance) bool {
     // 1. Lower match score is better
-    const sa = @intFromEnum(a.match_score);
-    const sb = @intFromEnum(b.match_score);
+    const sa = @backingInt(a.match_score);
+    const sb = @backingInt(b.match_score);
     if (sa != sb) return sa < sb;
 
     // 2. Active file in target project
@@ -602,4 +624,77 @@ test "discovery: live nvim socket probe and detection" {
 
     try std.testing.expect(res.best_match != null);
     try std.testing.expect(res.best_match.?.match_score.isMatch());
+}
+
+test "discovery: preserve socket aliases with long canonical paths" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const long_name = "long-neovim-directory-long-neovim-directory-long-neovim-directory-long-neovim-directory";
+    try tmp.dir.createDir(io, long_name, .default_dir);
+    try tmp.dir.symLink(io, long_name, "n", .{ .is_directory = true });
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(tmp_path);
+    const alias_dir = try std.fs.path.join(allocator, &.{ tmp_path, "n" });
+    defer allocator.free(alias_dir);
+    const socket_path = try std.fs.path.join(allocator, &.{ alias_dir, "nvim.sock" });
+    defer allocator.free(socket_path);
+    const canonical_socket = try std.fs.path.join(allocator, &.{ tmp_path, long_name, "nvim.sock" });
+    defer allocator.free(canonical_socket);
+
+    const path_capacity = @sizeOf(@FieldType(std.posix.sockaddr.un, "path"));
+    if (socket_path.len >= path_capacity) return error.SkipZigTest;
+    try std.testing.expect(canonical_socket.len >= path_capacity);
+
+    const address = try Io.net.UnixAddress.init(socket_path);
+    var server = try address.listen(io, .{});
+    defer server.deinit(io);
+
+    const candidates = try findCandidateSockets(allocator, io, alias_dir);
+    defer {
+        for (candidates) |candidate| allocator.free(candidate);
+        allocator.free(candidates);
+    }
+
+    var matches: usize = 0;
+    for (candidates) |candidate| {
+        const canonical = canonicalizePath(allocator, io, candidate);
+        defer if (canonical.ptr != candidate.ptr) allocator.free(canonical);
+        if (std.mem.eql(u8, canonical, canonical_socket)) {
+            matches += 1;
+            try std.testing.expectEqualStrings(socket_path, candidate);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), matches);
+
+    // Scanning the long path first must not hide a later, usable short alias.
+    const canonical_dir = try std.fs.path.join(allocator, &.{ tmp_path, long_name });
+    defer allocator.free(canonical_dir);
+    var scanned: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (scanned.items) |candidate| allocator.free(candidate);
+        scanned.deinit(allocator);
+    }
+    var seen: std.StringHashMapUnmanaged(usize) = .empty;
+    defer {
+        var keys = seen.keyIterator();
+        while (keys.next()) |key| allocator.free(key.*);
+        seen.deinit(allocator);
+    }
+
+    scanDirRecursive(allocator, io, canonical_dir, 0, 0, &scanned, &seen);
+    scanDirRecursive(allocator, io, alias_dir, 0, 0, &scanned, &seen);
+    scanDirRecursive(allocator, io, canonical_dir, 0, 0, &scanned, &seen);
+    try std.testing.expectEqual(@as(usize, 1), scanned.items.len);
+    try std.testing.expectEqualStrings(socket_path, scanned.items[0]);
+}
+
+test "discovery: reject socket paths without room for a terminator" {
+    const socket_path: [@sizeOf(@FieldType(std.posix.sockaddr.un, "path"))]u8 = @splat('x');
+    try std.testing.expect(connectUnixProbe(&socket_path) == null);
 }
