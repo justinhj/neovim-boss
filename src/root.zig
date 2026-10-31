@@ -731,7 +731,10 @@ test "mcp: resource read neovim://buffers with embedded child nvim" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const res = try mcp.resources.readResource(&n_instance, alloc, "neovim://buffers");
+    var cache = mcp.buffer_cache.BufferCache.init(allocator, &n_instance);
+    defer cache.deinit();
+
+    const res = try mcp.resources.readResource(&cache, alloc, "neovim://buffers");
     try std.testing.expectEqual(@as(usize, 1), res.contents.len);
     try std.testing.expectEqualStrings("neovim://buffers", res.contents[0].uri);
     try std.testing.expect(res.contents[0].mimeType != null);
