@@ -24,7 +24,12 @@ description: Use this skill when you have the neovim-boss MCP server loaded and 
 | **`write_full_buf`** | **Rewrite full buffer** | `buffer`, `content` *(req)* | Replace the entire contents of a buffer in-memory with full undo support. |
 
 ### MCP Resource
-- **`neovim://buffers`**: Returns rich JSON telemetry for all open buffers (`id`, `name`, `line_count`, `cursor_line`, `modified`, `loaded`, `windows`, `filetype`, `buftype`).
+- **`neovim://buffers`**: Returns JSON metadata for buffers currently backing visible windows: `[{id, name, line_count, modified, changedtick}]`.
+  - **Subscription-backed cache**: First read subscribes and attaches; subsequent reads are cheap in-memory cache lookups (polling is safe and efficient).
+  - **Visible windows only**: Hidden or background buffers are not tracked.
+  - **Change detection**: A bumped `changedtick` signifies buffer content changed; `modified` denotes unsaved modifications.
+  - **Metadata only**: Does not include buffer text. Use `read_full_buf` or `read_buf_range` with the buffer ID to retrieve contents.
+  - **Auto-drained notifications**: Neovim notifications are drained before serving, ensuring reads reflect current state.
 
 ---
 

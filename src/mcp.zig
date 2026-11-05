@@ -5,6 +5,7 @@ const Nvim = nvim_mod.Nvim;
 pub const types = @import("mcp/types.zig");
 pub const tools = @import("mcp/tools.zig");
 pub const resources = @import("mcp/resources.zig");
+pub const buffer_cache = @import("mcp/buffer_cache.zig");
 pub const server = @import("mcp/server.zig");
 pub const Server = server.Server;
 
