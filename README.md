@@ -184,19 +184,19 @@ Add to your MCP settings:
   - `write_full_buf`: Replace the entire contents of a buffer in-memory with full undo support.
     - Parameters: `buffer` (string | number, required) - Target buffer name, path, or number; `content` (string, required) - Full replacement text.
 - **Resources**:
-  - `neovim://buffers`: Returns a JSON array of all open buffers with comprehensive status metadata in a single RPC round-trip:
+  - `neovim://buffers`: Returns a JSON array of buffers backing visible windows with lightweight status metadata via a subscription-backed cache:
     - `id`: Buffer number (`bufnr`)
     - `name`: Buffer file path or name
-    - `listed`: Visible in buffer list (`buflisted`)
-    - `loaded`: Loaded in memory
-    - `modified`: Unsaved changes flag
-    - `hidden`: Hidden / unmapped buffer
     - `line_count`: Total lines in the buffer
-    - `cursor_line`: Last known cursor line number
-    - `windows`: Array of window IDs displaying this buffer
-    - `last_used`: Last access timestamp
-    - `filetype`: Detected filetype (e.g. `zig`, `markdown`, `lua`)
-    - `buftype`: Neovim buffer type (`""`, `help`, `nofile`, `terminal`, etc.)
+    - `modified`: Unsaved changes flag (`boolean`)
+    - `changedtick`: Buffer change counter (`integer`), bumped on every buffer change
+
+    *Behavior notes:*
+    - **Subscription-backed cache**: The first read subscribes via `nvim_buf_attach` and installs visibility autocmds; subsequent reads are served directly from cache without per-read RPC overhead (polling is cheap).
+    - **Visible window tracking**: Tracks buffers currently backing visible windows. Hidden/background buffers are omitted.
+    - **Metadata only**: Contains structure and modification state without buffer text. To read contents, use `read_full_buf` or `read_buf_range` with the buffer ID.
+    - **Change detection**: Compare `changedtick` across reads to detect buffer mutations. A bumped `changedtick` indicates content changes, while `modified` denotes unsaved modifications.
+    - **Freshness**: Drains pending Neovim notifications before serving each read, ensuring state is up to date.
 
 ### Agent Skills & Integration Tests
 

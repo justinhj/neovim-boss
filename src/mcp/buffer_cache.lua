@@ -25,15 +25,17 @@ local function try_attach(buf)
     return true
   end
   local ok = pcall(vim.api.nvim_buf_attach, buf, false, {
-    on_lines = function(_, b, tick, firstline, lastline, linedata, _)
-      -- Only the replacement line count crosses the wire, not the lines.
-      vim.rpcnotify(chan, 'neoboss_buf_lines', b, tick, firstline, lastline, #linedata)
+    on_lines = function(_, b, tick, firstline, lastline, new_lastline)
+      -- In-process Lua on_lines receives (event, buf, tick, firstline, lastline, new_lastline, byte_size).
+      -- Replacement line count is new_lastline - firstline.
+      local new_line_count = new_lastline - firstline
+      pcall(vim.rpcnotify, chan, 'neoboss_buf_lines', b, tick, firstline, lastline, new_line_count)
     end,
     on_changedtick = function(_, b, tick)
-      vim.rpcnotify(chan, 'neoboss_buf_tick', b, tick)
+      pcall(vim.rpcnotify, chan, 'neoboss_buf_tick', b, tick)
     end,
     on_detach = function(_, b)
-      vim.rpcnotify(chan, 'neoboss_buf_detach', b)
+      pcall(vim.rpcnotify, chan, 'neoboss_buf_detach', b)
     end,
   })
   if ok then
@@ -87,11 +89,11 @@ end
 if setup_autocmds then
   local group = vim.api.nvim_create_augroup('NeobossBufferCache', { clear = true })
   vim.api.nvim_create_autocmd(
-    { 'BufEnter', 'WinEnter', 'BufDelete', 'BufWipeout', 'BufWritePost' },
+    { 'BufEnter', 'WinEnter', 'WinClosed', 'BufDelete', 'BufWipeout', 'BufWritePost' },
     {
       group = group,
       callback = function()
-        vim.rpcnotify(chan, 'neoboss_buf_visibility')
+        pcall(vim.rpcnotify, chan, 'neoboss_buf_visibility')
       end,
     }
   )

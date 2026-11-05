@@ -1,10 +1,11 @@
 # Neovim Boss - Buffer & Edit Tools Integration Test
 
-You are an autonomous AI agent testing the 4 buffer/file operations provided by the `neovim-boss` MCP server:
+You are an autonomous AI agent testing the 4 buffer/file operations and the cached buffer resource provided by the `neovim-boss` MCP server:
 - `read_full_buf`
 - `read_buf_range`
 - `find_and_replace_buf`
 - `write_full_buf`
+- Resource: `neovim://buffers`
 
 Alongside these, you will use `get_state` (or `get_state_brief`), `send_command`, and `send_keys` to verify editor state, test undo behavior, and clean up.
 
@@ -20,6 +21,7 @@ Alongside these, you will use `get_state` (or `get_state_brief`), `send_command`
 2. **Verification & Success Criteria**:
    - For read operations (`read_full_buf`, `read_buf_range`): Check that returned lines are 1-indexed prefixed (`"<line_number>: <content>"`), total line counts match, and line ranges adhere to requested bounds.
    - For edit operations (`write_full_buf`, `find_and_replace_buf`): Check returned metadata (`total_lines`, `lines_added`, `lines_removed`, `start_line`), verify buffer state in `get_state` (`modified_buffers`), and verify that changes can be undone cleanly with `send_keys("u")`.
+   - For resource reads (`neovim://buffers`): Check that returned JSON contains array of objects with `{id, name, line_count, modified, changedtick}` for buffers backing visible windows. Verify that edits increment `changedtick` and set `modified: true`, and that non-visible background buffers are excluded from the cached resource.
    - For error cases: Ensure proper structured error messages are returned (e.g., string not found, ambiguous multiple matches, invalid buffer, empty search string).
    - Keep an internal scorecard of `[PASSED]`, `[FAILED]`, and error details for each test case.
 
@@ -233,6 +235,44 @@ Alongside these, you will use `get_state` (or `get_state_brief`), `send_command`
 
 ---
 
+## 6 — `neovim://buffers` Cached Resource Operations
+
+### 6.1 Initial Subscription and Schema Validation
+- **Action**:
+  - Focus or open a visible buffer (e.g. `send_command("edit edit_test_resource.txt")`).
+  - Read resource: `neovim://buffers` (via MCP `resources/read`).
+- **Expected Outcome**:
+  - First read subscribes and attaches to buffers backing visible windows.
+  - Returns JSON array with objects containing fields: `id`, `name`, `line_count`, `modified`, `changedtick`.
+  - `edit_test_resource.txt` is present in the array.
+
+### 6.2 Change Detection via `changedtick`
+- **Action**:
+  - Record the `changedtick` and `line_count` for `edit_test_resource.txt` from the resource.
+  - Perform an edit: `write_full_buf("edit_test_resource.txt", "resource line 1\nresource line 2\n")`.
+  - Read resource: `neovim://buffers`.
+- **Expected Outcome**:
+  - The `changedtick` for `edit_test_resource.txt` has incremented (`new_tick > old_tick`).
+  - `line_count` is updated to 2.
+  - `modified` is `true`.
+
+### 6.3 Background / Hidden Buffers Excluded
+- **Action**:
+  - Open a second file into the window: `send_command("edit edit_test_other.txt")`.
+  - Read resource: `neovim://buffers`.
+- **Expected Outcome**:
+  - `edit_test_other.txt` is visible and present in the cached resource.
+  - Hidden buffer `edit_test_resource.txt` (no longer backing any visible window) is excluded from `neovim://buffers`.
+
+### 6.4 Resource Teardown Cleanup
+- **Action**:
+  - Delete test buffers: `send_command("bd! edit_test_resource.txt")` and `send_command("bd! edit_test_other.txt")`.
+  - Read resource: `neovim://buffers`.
+- **Expected Outcome**:
+  - Deleted buffers are no longer present in `neovim://buffers`.
+
+---
+
 ## Final Verification Report Format
 
 Upon finishing all test steps, output the execution summary in the following markdown table format:
@@ -262,5 +302,10 @@ Upon finishing all test steps, output the execution summary in the following mar
 | 4.8 | Undo find and replace | `send_keys`, `read_full_buf` | PASS/FAIL | |
 | 5.1 | Background buffer edit | `write_full_buf`, `find_and_replace_buf` | PASS/FAIL | |
 | 5.2 | Cleanup & teardown | `send_command`, `get_state` | PASS/FAIL | |
+| 6.1 | Resource subscription & schema | `neovim://buffers`, `send_command` | PASS/FAIL | |
+| 6.2 | Change detection (`changedtick`) | `neovim://buffers`, `write_full_buf` | PASS/FAIL | |
+| 6.3 | Hidden buffers excluded | `neovim://buffers`, `send_command` | PASS/FAIL | |
+| 6.4 | Resource teardown cleanup | `neovim://buffers`, `send_command` | PASS/FAIL | |
 
 **Overall Result**: [ALL PASSED / N FAILED]
+
