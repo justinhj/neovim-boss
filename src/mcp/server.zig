@@ -172,6 +172,8 @@ pub const Server = struct {
             return self.handleToolsCall(arena, id, params);
         } else if (std.mem.eql(u8, method, "resources/list")) {
             return self.handleResourcesList(arena, id);
+        } else if (std.mem.eql(u8, method, "resources/templates/list")) {
+            return self.handleResourceTemplatesList(arena, id);
         } else if (std.mem.eql(u8, method, "resources/read")) {
             return self.handleResourcesRead(arena, id, params);
         } else {
@@ -276,6 +278,14 @@ pub const Server = struct {
 
         var result_map: std.json.ObjectMap = .empty;
         try result_map.put(arena, "resources", .{ .array = res_arr });
+
+        try self.sendResult(arena, id, .{ .object = result_map });
+    }
+
+    fn handleResourceTemplatesList(self: *Server, arena: std.mem.Allocator, id: std.json.Value) !void {
+        const templates_arr = std.json.Array.init(arena);
+        var result_map: std.json.ObjectMap = .empty;
+        try result_map.put(arena, "resourceTemplates", .{ .array = templates_arr });
 
         try self.sendResult(arena, id, .{ .object = result_map });
     }

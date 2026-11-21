@@ -762,20 +762,25 @@ test "mcp: server handleLine protocol requests" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
+    const Helper = struct {
+        fn readResponse(allocator_in: std.mem.Allocator, fd: std.posix.fd_t) !std.json.Parsed(std.json.Value) {
+            var out_data: std.ArrayList(u8) = .empty;
+            var chunk: [1024]u8 = undefined;
+            while (true) {
+                const n = std.c.read(fd, &chunk, chunk.len);
+                try std.testing.expect(n > 0);
+                try out_data.appendSlice(allocator_in, chunk[0..@intCast(n)]);
+                if (std.mem.indexOfScalar(u8, out_data.items, '\n') != null) break;
+            }
+            return std.json.parseFromSlice(std.json.Value, allocator_in, out_data.items, .{});
+        }
+    };
+
     // 1. Test initialize
     const init_req = "{\"jsonrpc\":\"2.0\",\"id\":100,\"method\":\"initialize\",\"params\":{}}";
     try server.handleLine(alloc, init_req);
 
-    var out_data: std.ArrayList(u8) = .empty;
-    var chunk: [1024]u8 = undefined;
-    while (true) {
-        const n = std.c.read(pipe_fds[0], &chunk, chunk.len);
-        try std.testing.expect(n > 0);
-        try out_data.appendSlice(alloc, chunk[0..@intCast(n)]);
-        if (std.mem.indexOfScalar(u8, out_data.items, '\n') != null) break;
-    }
-
-    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, out_data.items, .{});
+    const parsed = try Helper.readResponse(alloc, pipe_fds[0]);
     try std.testing.expectEqual(@as(i64, 100), parsed.value.object.get("id").?.integer);
     const result_obj = parsed.value.object.get("result").?.object;
     try std.testing.expectEqualStrings("2024-11-05", result_obj.get("protocolVersion").?.string);
@@ -790,4 +795,13 @@ test "mcp: server handleLine protocol requests" {
     for (try mcp.resources.listResources(alloc)) |r| {
         try std.testing.expect(std.mem.indexOf(u8, instructions, r.uri) != null);
     }
+
+    // 2. Test resources/templates/list
+    const templates_req = "{\"jsonrpc\":\"2.0\",\"id\":101,\"method\":\"resources/templates/list\",\"params\":{}}";
+    try server.handleLine(alloc, templates_req);
+
+    const templates_parsed = try Helper.readResponse(alloc, pipe_fds[0]);
+    try std.testing.expectEqual(@as(i64, 101), templates_parsed.value.object.get("id").?.integer);
+    const templates_res = templates_parsed.value.object.get("result").?.object;
+    try std.testing.expectEqual(@as(usize, 0), templates_res.get("resourceTemplates").?.array.items.len);
 }
