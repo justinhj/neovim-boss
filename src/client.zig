@@ -198,11 +198,22 @@ pub const Client = struct {
         }
     }
 
-    /// Process one message if available. Returns true if a message was dispatched.
+    /// Process one message if available, draining immediately readable bytes
+    /// from the transport without blocking. Returns true if a message was dispatched.
     pub fn processOne(self: *Client, arena: std.mem.Allocator) !bool {
         if (try self.poll(arena)) |msg| {
             try self.dispatchMessage(arena, msg);
             return true;
+        }
+
+        var read_buf: [4096]u8 = undefined;
+        while (try self.transport.tryRead(&read_buf)) |n| {
+            if (n == 0) return error.EndOfStream;
+            try self.unpacker.feed(read_buf[0..n]);
+            if (try self.poll(arena)) |msg| {
+                try self.dispatchMessage(arena, msg);
+                return true;
+            }
         }
         return false;
     }
@@ -447,4 +458,44 @@ test "client: rpc error response handling" {
     try std.testing.expectError(error.RpcError, err);
     try std.testing.expect(client.lastError() != null);
     try std.testing.expectEqualStrings("Invalid function call", client.lastError().?);
+}
+
+test "client: processOne reads pending notification from transport" {
+    const allocator = std.testing.allocator;
+
+    var fds: [2]std.posix.fd_t = undefined;
+    const rc = std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &fds);
+    try std.testing.expectEqual(@as(c_int, 0), rc);
+
+    var client = try Client.init(allocator, Transport.fromFd(fds[0]));
+    defer client.deinit();
+
+    var peer_transport = Transport.fromFd(fds[1]);
+    defer peer_transport.close();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var received = false;
+    const Handler = struct {
+        fn onNotification(ud: ?*anyopaque, notif: msgpack.RpcNotification) void {
+            const flag: *bool = @ptrCast(@alignCast(ud.?));
+            if (std.mem.eql(u8, notif.method, "buf_event")) {
+                flag.* = true;
+            }
+        }
+    };
+    client.setNotificationHandler(&received, Handler.onNotification);
+
+    try std.testing.expectEqual(false, try client.processOne(alloc));
+
+    var p = msgpack.Packer.init(alloc);
+    defer p.deinit();
+    try msgpack.rpc.packNotification(&p, "buf_event", &.{});
+    try peer_transport.writeAll(p.getSlice());
+
+    try std.testing.expectEqual(true, try client.processOne(alloc));
+    try std.testing.expect(received);
+    try std.testing.expectEqual(false, try client.processOne(alloc));
 }
