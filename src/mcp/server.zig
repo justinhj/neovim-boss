@@ -7,6 +7,33 @@ const resources = @import("resources.zig");
 const root = @import("../root.zig");
 const buffer_cache = @import("buffer_cache.zig");
 
+pub const SERVER_INSTRUCTIONS: []const u8 =
+    \\neovim-boss controls a live Neovim session over MessagePack-RPC.
+    \\
+    \\Orientation:
+    \\- Call get_state_brief at the start of a task or turn to inspect mode, cwd, active window, cursor context, modified buffers, and listed buffers. Never assume the cursor position or active file has not changed.
+    \\- Call get_state when you need all visible windows, visual selection bounds, closed folds, marks (a-z), indent settings, or LSP diagnostics_summary counts.
+    \\
+    \\Reading & Editing Buffers:
+    \\- Buffer tools (read_full_buf, read_buf_range, find_and_replace_buf, write_full_buf) accept a buffer number (0 or "" for the current buffer) or a file path/buffer name.
+    \\- Prefer read_buf_range over read_full_buf for large files.
+    \\- Prefer find_and_replace_buf for targeted edits over write_full_buf or send_keys. Its `find` string must match uniquely; include surrounding context lines if it matches multiple locations.
+    \\- find_and_replace_buf and write_full_buf edit Neovim's in-memory buffer with a discrete undo checkpoint (reversible via `u`) and do NOT write to disk. Only save with send_command (`w`) when requested or needed for disk-based tools.
+    \\
+    \\Navigation, Commands & Lua:
+    \\- Use send_command for Ex commands (leading `:` optional): opening/switching files (`edit <path>`, `buffer <name>`), splits (`vsplit`, `split`, `wincmd h/j/k/l`, `only`), tabs (`tabnew`), saving (`w`), reloading (`edit!`), or opening a terminal (`terminal`).
+    \\- Use send_keys for interactive actions such as undo (`u`), motions (`42G`), or tab switching (`gt`/`gT`). Vim key notation (`<Esc>`, `<CR>`, `<C-w>v`) is supported. `escape` defaults to true (prepends `<Esc>` to enter normal mode); pass `escape: false` when typing inside insert, visual, or terminal mode.
+    \\- Use exec_lua for Neovim API/runtime queries (e.g., detailed `vim.diagnostic.get()`, plugin/runtime inspection, help completion) or multi-step scripts. Include an explicit `return` statement to receive a value back.
+    \\
+    \\Resource:
+    \\- neovim://buffers returns cached JSON metadata (`id`, `name`, `line_count`, `modified`, `changedtick`) for buffers in visible windows only (hidden buffers are omitted). Polling is cheap; compare `changedtick` to detect changes and use read_full_buf or read_buf_range to read contents.
+    \\
+    \\Safety:
+    \\- Check `modified_buffers` before closing buffers or quitting; never run destructive commands (`:q!`, `:qa!`, `:bd!`, `:edit!`) unless explicitly asked to discard unsaved work.
+    \\- Do not run shell commands via `:!` in send_command.
+    \\- Re-verify editor state with get_state_brief (or get_state for diagnostics) after layout changes or edits.
+;
+
 pub const Server = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -167,6 +194,7 @@ pub const Server = struct {
         try server_info_map.put(arena, "name", .{ .string = "neovim-boss" });
         try server_info_map.put(arena, "version", .{ .string = root.version });
         try result_map.put(arena, "serverInfo", .{ .object = server_info_map });
+        try result_map.put(arena, "instructions", .{ .string = SERVER_INSTRUCTIONS });
 
         try self.sendResult(arena, id, .{ .object = result_map });
     }

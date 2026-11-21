@@ -163,6 +163,77 @@ fn getEnv(key: [*:0]const u8) ?[:0]const u8 {
     return null;
 }
 
+fn getDarwinUserTempDir(buf: []u8) ?[]const u8 {
+    if (comptime builtin.os.tag != .macos) return null;
+
+    const c = struct {
+        const _CS_DARWIN_USER_TEMP_DIR: c_int = 65537;
+        extern "c" fn confstr(name: c_int, out: ?[*]u8, len: usize) usize;
+    };
+
+    const n = c.confstr(c._CS_DARWIN_USER_TEMP_DIR, buf.ptr, buf.len);
+    if (n <= 1 or n > buf.len) return null;
+    return buf[0 .. n - 1];
+}
+
+fn getLinuxRuntimeDir(buf: []u8) ?[]const u8 {
+    if (comptime builtin.os.tag != .linux) return null;
+
+    const c = struct {
+        extern "c" fn getuid() u32;
+    };
+
+    return std.fmt.bufPrint(buf, "/run/user/{d}", .{c.getuid()}) catch null;
+}
+
+fn appendUniqueSearchDir(
+    allocator: Allocator,
+    search_dirs: *std.ArrayList([]const u8),
+    raw_dir: []const u8,
+) !void {
+    if (raw_dir.len == 0) return;
+
+    const trimmed = std.mem.trimEnd(u8, raw_dir, "/");
+    const normalized = if (trimmed.len == 0) "/" else trimmed;
+
+    for (search_dirs.items) |existing| {
+        if (std.mem.eql(u8, existing, normalized)) return;
+    }
+    try search_dirs.append(allocator, normalized);
+}
+
+fn collectSearchDirs(
+    allocator: Allocator,
+    tmpdir_env: ?[]const u8,
+    xdg_runtime_env: ?[]const u8,
+    darwin_tmp_buf: []u8,
+    linux_runtime_buf: []u8,
+) !std.ArrayList([]const u8) {
+    var search_dirs: std.ArrayList([]const u8) = .empty;
+    errdefer search_dirs.deinit(allocator);
+
+    if (tmpdir_env) |tmp| {
+        try appendUniqueSearchDir(allocator, &search_dirs, tmp);
+    }
+    // Include OS-level fallbacks even when env vars are stripped (e.g. MCP Inspector)
+    // or overridden to another temp path.
+    if (getDarwinUserTempDir(darwin_tmp_buf)) |darwin_tmp| {
+        try appendUniqueSearchDir(allocator, &search_dirs, darwin_tmp);
+    }
+    if (xdg_runtime_env) |xdg| {
+        try appendUniqueSearchDir(allocator, &search_dirs, xdg);
+    }
+    if (getLinuxRuntimeDir(linux_runtime_buf)) |runtime_dir| {
+        try appendUniqueSearchDir(allocator, &search_dirs, runtime_dir);
+    }
+    try appendUniqueSearchDir(allocator, &search_dirs, "/tmp");
+    if (builtin.os.tag == .macos) {
+        try appendUniqueSearchDir(allocator, &search_dirs, "/private/tmp");
+    }
+
+    return search_dirs;
+}
+
 fn setSocketTimeout(fd: std.posix.fd_t, timeout_ms: u32) void {
     if (builtin.os.tag != .windows) {
         const tv = std.posix.timeval{
@@ -383,19 +454,16 @@ pub fn findCandidateSockets(
     }
 
     // 3. Search default system runtime / temp directories
-    var search_dirs: std.ArrayList([]const u8) = .empty;
+    var darwin_tmp_buf: [std.posix.PATH_MAX]u8 = undefined;
+    var linux_runtime_buf: [64]u8 = undefined;
+    var search_dirs = try collectSearchDirs(
+        allocator,
+        getEnv("TMPDIR"),
+        getEnv("XDG_RUNTIME_DIR"),
+        &darwin_tmp_buf,
+        &linux_runtime_buf,
+    );
     defer search_dirs.deinit(allocator);
-
-    if (getEnv("TMPDIR")) |tmp| {
-        try search_dirs.append(allocator, tmp);
-    }
-    if (getEnv("XDG_RUNTIME_DIR")) |xdg| {
-        try search_dirs.append(allocator, xdg);
-    }
-    try search_dirs.append(allocator, "/tmp");
-    if (builtin.os.tag == .macos) {
-        try search_dirs.append(allocator, "/private/tmp");
-    }
 
     for (search_dirs.items) |sdir| {
         scanDirRecursive(allocator, io, sdir, 0, 3, &candidates, &seen);
@@ -697,4 +765,69 @@ test "discovery: preserve socket aliases with long canonical paths" {
 test "discovery: reject socket paths without room for a terminator" {
     const socket_path: [@sizeOf(@FieldType(std.posix.sockaddr.un, "path"))]u8 = @splat('x');
     try std.testing.expect(connectUnixProbe(&socket_path) == null);
+}
+
+fn countSearchDir(dirs: []const []const u8, target: []const u8) usize {
+    var count: usize = 0;
+    for (dirs) |dir| {
+        if (std.mem.eql(u8, dir, target)) count += 1;
+    }
+    return count;
+}
+
+test "discovery: fallback search dirs when env vars are stripped" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var darwin_buf: [std.posix.PATH_MAX]u8 = undefined;
+    var linux_buf: [64]u8 = undefined;
+    var search_dirs = try collectSearchDirs(allocator, null, null, &darwin_buf, &linux_buf);
+    defer search_dirs.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), countSearchDir(search_dirs.items, "/tmp"));
+
+    if (builtin.os.tag == .macos) {
+        var check_buf: [std.posix.PATH_MAX]u8 = undefined;
+        const raw_darwin_tmp = getDarwinUserTempDir(&check_buf);
+        try std.testing.expect(raw_darwin_tmp != null);
+        try std.testing.expect(raw_darwin_tmp.?.len > 0);
+        try std.testing.expect(std.mem.startsWith(u8, raw_darwin_tmp.?, "/"));
+
+        const expected = std.mem.trimEnd(u8, raw_darwin_tmp.?, "/");
+        try std.testing.expectEqual(@as(usize, 1), countSearchDir(search_dirs.items, expected));
+        try Io.Dir.accessAbsolute(io, expected, .{});
+        try std.testing.expectEqual(@as(usize, 1), countSearchDir(search_dirs.items, "/private/tmp"));
+    } else if (builtin.os.tag == .linux) {
+        var check_buf: [64]u8 = undefined;
+        const runtime_dir = getLinuxRuntimeDir(&check_buf);
+        try std.testing.expect(runtime_dir != null);
+        try std.testing.expect(std.mem.startsWith(u8, runtime_dir.?, "/run/user/"));
+        try std.testing.expectEqual(@as(usize, 1), countSearchDir(search_dirs.items, runtime_dir.?));
+    }
+}
+
+test "discovery: search dirs normalize and deduplicate" {
+    const allocator = std.testing.allocator;
+
+    var darwin_buf: [std.posix.PATH_MAX]u8 = undefined;
+    var linux_buf: [64]u8 = undefined;
+    var search_dirs = try collectSearchDirs(allocator, "/tmp/", "", &darwin_buf, &linux_buf);
+    defer search_dirs.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), countSearchDir(search_dirs.items, "/tmp"));
+    try std.testing.expectEqual(@as(usize, 0), countSearchDir(search_dirs.items, "/"));
+
+    if (builtin.os.tag == .macos) {
+        var check_buf: [std.posix.PATH_MAX]u8 = undefined;
+        const raw_darwin_tmp = getDarwinUserTempDir(&check_buf).?;
+        const expected = std.mem.trimEnd(u8, raw_darwin_tmp, "/");
+
+        var with_slash_buf: [std.posix.PATH_MAX]u8 = undefined;
+        const with_slash = try std.fmt.bufPrint(&with_slash_buf, "{s}/", .{expected});
+
+        var dedup_dirs = try collectSearchDirs(allocator, with_slash, null, &darwin_buf, &linux_buf);
+        defer dedup_dirs.deinit(allocator);
+
+        try std.testing.expectEqual(@as(usize, 1), countSearchDir(dedup_dirs.items, expected));
+    }
 }

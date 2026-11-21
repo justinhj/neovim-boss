@@ -766,13 +766,28 @@ test "mcp: server handleLine protocol requests" {
     const init_req = "{\"jsonrpc\":\"2.0\",\"id\":100,\"method\":\"initialize\",\"params\":{}}";
     try server.handleLine(alloc, init_req);
 
-    var out_buf: [2048]u8 = undefined;
-    const n = std.c.read(pipe_fds[0], &out_buf, out_buf.len);
-    try std.testing.expect(n > 0);
+    var out_data: std.ArrayList(u8) = .empty;
+    var chunk: [1024]u8 = undefined;
+    while (true) {
+        const n = std.c.read(pipe_fds[0], &chunk, chunk.len);
+        try std.testing.expect(n > 0);
+        try out_data.appendSlice(alloc, chunk[0..@intCast(n)]);
+        if (std.mem.indexOfScalar(u8, out_data.items, '\n') != null) break;
+    }
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, out_buf[0..@intCast(n)], .{});
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, out_data.items, .{});
     try std.testing.expectEqual(@as(i64, 100), parsed.value.object.get("id").?.integer);
     const result_obj = parsed.value.object.get("result").?.object;
     try std.testing.expectEqualStrings("2024-11-05", result_obj.get("protocolVersion").?.string);
     try std.testing.expectEqualStrings("neovim-boss", result_obj.get("serverInfo").?.object.get("name").?.string);
+
+    const instructions = result_obj.get("instructions").?.string;
+    try std.testing.expectEqualStrings(mcp.server.SERVER_INSTRUCTIONS, instructions);
+
+    for (try mcp.tools.listTools(alloc)) |t| {
+        try std.testing.expect(std.mem.indexOf(u8, instructions, t.name) != null);
+    }
+    for (try mcp.resources.listResources(alloc)) |r| {
+        try std.testing.expect(std.mem.indexOf(u8, instructions, r.uri) != null);
+    }
 }
