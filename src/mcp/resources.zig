@@ -46,6 +46,7 @@ fn readOpenBuffers(cache: *buffer_cache.BufferCache, arena: std.mem.Allocator) !
     // during the sync RPC re-arm it for the next read.)
     if (cache.visibility_dirty) {
         try cache.syncVisibility(arena);
+        while (try cache.nvim.processOne(arena)) {}
     }
 
     // Surface (once) any error the notification handler recorded.

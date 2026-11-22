@@ -183,6 +183,7 @@ pub const BufferCache = struct {
             const lastline = object_util.asInt(notif.params[3], i64) orelse return;
             const new_lines = object_util.asInt(notif.params[4], i64) orelse return;
             if (self.entries.getPtr(bufnr)) |e| {
+                if (tick <= e.changedtick) return;
                 e.line_count = applyLineDelta(e.line_count, firstline, lastline, new_lines);
                 e.changedtick = tick;
                 e.modified = true;
@@ -193,6 +194,7 @@ pub const BufferCache = struct {
             const bufnr = object_util.asInt(notif.params[0], i64) orelse return;
             const tick = object_util.asInt(notif.params[1], i64) orelse return;
             if (self.entries.getPtr(bufnr)) |e| {
+                if (tick <= e.changedtick) return;
                 e.changedtick = tick;
             }
         } else if (std.mem.eql(u8, notif.method, "neoboss_buf_detach")) {
@@ -279,6 +281,21 @@ test "buffer_cache: notification handling updates entries" {
         try std.testing.expectEqual(@as(i64, 11), e.line_count);
         try std.testing.expectEqual(@as(i64, 6), e.changedtick);
         try std.testing.expect(e.modified);
+    }
+
+    // Stale tick is ignored (does not double-apply already snapshotted delta).
+    var stale_params = [_]MsgPackObject{
+        .{ .integer = 1 },
+        .{ .integer = 6 },
+        .{ .integer = 0 },
+        .{ .integer = 0 },
+        .{ .integer = 5 },
+    };
+    try cache.handleNotification(.{ .method = "neoboss_buf_lines", .params = &stale_params });
+    {
+        const e = cache.entries.getPtr(1).?;
+        try std.testing.expectEqual(@as(i64, 11), e.line_count);
+        try std.testing.expectEqual(@as(i64, 6), e.changedtick);
     }
 
     // Unknown bufnr: ignored, no entry created.

@@ -1,47 +1,69 @@
 -- Event-driven buffer status for neovim://buffers (issue #6).
 --
 -- One RPC does everything: attaches nvim_buf_attach to every buffer backing a
--- visible window, detaches buffers that are no longer visible, installs the
--- visibility autocmds (once), and returns the authoritative snapshot.
+-- visible window, detaches callbacks for buffers that are no longer visible,
+-- installs the visibility autocmds (once), and returns the authoritative snapshot.
 --
 -- Args:
 --   chan            our RPC channel id, for vim.rpcnotify back to the client
---   attached_list   array of bufnrs the client believes are attached
---   setup_autocmds  true on first subscribe; installs the NeobossBufferCache
+--   attached_list   unused (authoritative attach generation state lives in _G)
+--   setup_autocmds  true on first subscribe; installs the NeobossBufferCache_<chan>
 --                   augroup (cleared first, so re-running is idempotent)
 --
 -- Returns: array of { bufnr, name, line_count, modified, changedtick }
 -- for every currently visible buffer.
-local chan, attached_list, setup_autocmds = ...
+local chan, _, setup_autocmds = ...
 assert(type(chan) == 'number', 'buffer_cache: channel id (arg 1) required')
 
-local attached = {}
-for _, b in ipairs(attached_list) do
-  attached[b] = true
+_G._neoboss_buf_cache = _G._neoboss_buf_cache or {}
+local state = _G._neoboss_buf_cache[chan]
+if not state then
+  state = { next_gen = 0, bufs = {} }
+  _G._neoboss_buf_cache[chan] = state
 end
 
 local function try_attach(buf)
-  if attached[buf] then
+  if state.bufs[buf] ~= nil then
     return true
   end
-  local ok = pcall(vim.api.nvim_buf_attach, buf, false, {
+  state.next_gen = state.next_gen + 1
+  local gen = state.next_gen
+  state.bufs[buf] = gen
+
+  local ok, attached_ok = pcall(vim.api.nvim_buf_attach, buf, false, {
     on_lines = function(_, b, tick, firstline, lastline, new_lastline)
+      if state.bufs[b] ~= gen then
+        return true
+      end
+      if tick == nil then
+        local ok_t, t = pcall(vim.api.nvim_buf_get_changedtick, b)
+        if ok_t then
+          tick = t
+        end
+      end
       -- In-process Lua on_lines receives (event, buf, tick, firstline, lastline, new_lastline, byte_size).
       -- Replacement line count is new_lastline - firstline.
       local new_line_count = new_lastline - firstline
       pcall(vim.rpcnotify, chan, 'neoboss_buf_lines', b, tick, firstline, lastline, new_line_count)
     end,
     on_changedtick = function(_, b, tick)
+      if state.bufs[b] ~= gen then
+        return true
+      end
       pcall(vim.rpcnotify, chan, 'neoboss_buf_tick', b, tick)
     end,
     on_detach = function(_, b)
-      pcall(vim.rpcnotify, chan, 'neoboss_buf_detach', b)
+      if state.bufs[b] == gen then
+        state.bufs[b] = nil
+        pcall(vim.rpcnotify, chan, 'neoboss_buf_detach', b)
+      end
     end,
   })
-  if ok then
-    attached[buf] = true
+  if not (ok and attached_ok) then
+    state.bufs[buf] = nil
+    return false
   end
-  return ok
+  return true
 end
 
 local function snapshot(buf)
@@ -79,17 +101,27 @@ for buf, _ in pairs(visible) do
   end
 end
 
--- Drop buffers that are no longer visible (their on_detach also notifies us).
-for buf, _ in pairs(attached) do
+-- Mark non-visible buffers inactive so their callbacks return true and detach.
+for buf, _ in pairs(state.bufs) do
   if not visible[buf] then
-    pcall(vim.api.nvim_buf_detach, buf)
+    state.bufs[buf] = nil
   end
 end
 
 if setup_autocmds then
-  local group = vim.api.nvim_create_augroup('NeobossBufferCache', { clear = true })
+  local group = vim.api.nvim_create_augroup('NeobossBufferCache_' .. chan, { clear = true })
   vim.api.nvim_create_autocmd(
-    { 'BufEnter', 'WinEnter', 'WinClosed', 'BufDelete', 'BufWipeout', 'BufWritePost' },
+    {
+      'BufEnter',
+      'WinEnter',
+      'WinClosed',
+      'BufDelete',
+      'BufWipeout',
+      'BufWritePost',
+      'BufModifiedSet',
+      'BufFilePost',
+      'BufReadPost',
+    },
     {
       group = group,
       callback = function()

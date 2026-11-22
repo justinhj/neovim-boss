@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 
 pub const TransportError = error{
@@ -139,6 +140,36 @@ pub const Transport = struct {
         return @intCast(n);
     }
 
+    /// Non-blocking read: checks whether bytes are immediately available on `read_fd`
+    /// using `poll(2)` with a 0ms timeout.
+    /// Returns `null` if reading would block, `0` on EOF/peer close, or bytes read (> 0).
+    pub fn tryRead(self: *Transport, buffer: []u8) TransportError!?usize {
+        if (self.read_fd < 0) return TransportError.ReadFailed;
+        if (buffer.len == 0) return 0;
+        if (comptime builtin.os.tag == .windows) return null;
+
+        var fds = [_]std.posix.pollfd{.{
+            .fd = self.read_fd,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        const ready = std.posix.poll(&fds, 0) catch return TransportError.ReadFailed;
+        if (ready == 0) return null;
+
+        const revents = fds[0].revents;
+        if ((revents & std.posix.POLL.NVAL) != 0) return TransportError.ReadFailed;
+        if ((revents & std.posix.POLL.IN) != 0) {
+            return try self.read(buffer);
+        }
+        if ((revents & std.posix.POLL.HUP) != 0) {
+            return 0;
+        }
+        if ((revents & std.posix.POLL.ERR) != 0) {
+            return TransportError.ReadFailed;
+        }
+        return null;
+    }
+
     /// Write all bytes to the transport, looping on partial writes.
     pub fn writeAll(self: *Transport, bytes: []const u8) TransportError!void {
         if (self.write_fd < 0) return TransportError.WriteFailed;
@@ -224,4 +255,30 @@ test "transport: spawnChild embedded nvim" {
     try std.testing.expect(t.read_fd >= 0);
     try std.testing.expect(t.write_fd >= 0);
     try std.testing.expect(t.child != null);
+}
+
+test "transport: tryRead non-blocking behavior" {
+    var fds: [2]std.posix.fd_t = undefined;
+    const rc = std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &fds);
+    try std.testing.expectEqual(@as(c_int, 0), rc);
+
+    var reader = Transport.fromFd(fds[0]);
+    defer reader.close();
+    var writer = Transport.fromFd(fds[1]);
+    var writer_closed = false;
+    defer if (!writer_closed) writer.close();
+
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqual(@as(?usize, null), try reader.tryRead(&buf));
+
+    try writer.writeAll("ping");
+    const n = (try reader.tryRead(&buf)).?;
+    try std.testing.expectEqual(@as(usize, 4), n);
+    try std.testing.expectEqualStrings("ping", buf[0..n]);
+
+    try std.testing.expectEqual(@as(?usize, null), try reader.tryRead(&buf));
+
+    writer.close();
+    writer_closed = true;
+    try std.testing.expectEqual(@as(?usize, 0), try reader.tryRead(&buf));
 }

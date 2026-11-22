@@ -805,3 +805,125 @@ test "mcp: server handleLine protocol requests" {
     const templates_res = templates_parsed.value.object.get("result").?.object;
     try std.testing.expectEqual(@as(usize, 0), templates_res.get("resourceTemplates").?.array.items.len);
 }
+
+test "mcp: resource neovim://buffers reflects external edits and buffer switches" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const test_socket = "/tmp/nb_test_buf_cache.sock";
+    _ = std.Io.Dir.deleteFileAbsolute(io, test_socket) catch {};
+
+    var child = try std.process.spawn(io, .{
+        .argv = &.{ "nvim", "--headless", "--listen", test_socket },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    defer {
+        child.kill(io);
+        _ = std.Io.Dir.deleteFileAbsolute(io, test_socket) catch {};
+    }
+
+    var mcp_nvim_opt: ?Nvim = null;
+    var conn_attempts: usize = 0;
+    while (conn_attempts < 40) : (conn_attempts += 1) {
+        if (attach(allocator, io, .{ .socket = test_socket })) |n| {
+            mcp_nvim_opt = n;
+            break;
+        } else |_| {}
+        io.sleep(.{ .nanoseconds = 50 * std.time.ns_per_ms }, .awake) catch {};
+    }
+    try std.testing.expect(mcp_nvim_opt != null);
+    var mcp_nvim = mcp_nvim_opt.?;
+    defer mcp_nvim.deinit();
+
+    var user_nvim = try attach(allocator, io, .{ .socket = test_socket });
+    defer user_nvim.deinit();
+
+    var cache = mcp.buffer_cache.BufferCache.init(allocator, &mcp_nvim);
+    defer cache.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const BufEntry = struct {
+        id: i64,
+        line_count: i64,
+        modified: bool,
+        changedtick: i64,
+    };
+
+    const Helper = struct {
+        fn readSingle(
+            c: *mcp.buffer_cache.BufferCache,
+            a: std.mem.Allocator,
+        ) !BufEntry {
+            const res = try mcp.resources.readResource(c, a, "neovim://buffers");
+            const parsed = try std.json.parseFromSlice(std.json.Value, a, res.contents[0].text, .{});
+            const arr = parsed.value.array.items;
+            try std.testing.expectEqual(@as(usize, 1), arr.len);
+            const obj = arr[0].object;
+            return .{
+                .id = obj.get("id").?.integer,
+                .line_count = obj.get("line_count").?.integer,
+                .modified = obj.get("modified").?.bool,
+                .changedtick = obj.get("changedtick").?.integer,
+            };
+        }
+    };
+
+    // 1. Initial read: 1 empty buffer, 1 line, unmodified
+    const init_entry = try Helper.readSingle(&cache, alloc);
+    try std.testing.expectEqual(@as(i64, 1), init_entry.line_count);
+    try std.testing.expectEqual(false, init_entry.modified);
+    const buf1_id = init_entry.id;
+
+    // 2. External edit on user_nvim (no RPCs sent via mcp_nvim): append 3 lines
+    try user_nvim.command(alloc, "call append(line('$'), ['two', 'three', 'four'])");
+
+    var after_edit = init_entry;
+    for (0..40) |_| {
+        after_edit = try Helper.readSingle(&cache, alloc);
+        if (after_edit.line_count == 4 and after_edit.modified) break;
+        io.sleep(.{ .nanoseconds = 25 * std.time.ns_per_ms }, .awake) catch {};
+    }
+    try std.testing.expectEqual(@as(i64, 4), after_edit.line_count);
+    try std.testing.expectEqual(true, after_edit.modified);
+    try std.testing.expect(after_edit.changedtick > init_entry.changedtick);
+
+    // 3. Switch to a new buffer via :enew
+    try user_nvim.command(alloc, "set hidden");
+    try user_nvim.command(alloc, "enew");
+
+    var after_enew = after_edit;
+    for (0..40) |_| {
+        after_enew = try Helper.readSingle(&cache, alloc);
+        if (after_enew.id != buf1_id) break;
+        io.sleep(.{ .nanoseconds = 25 * std.time.ns_per_ms }, .awake) catch {};
+    }
+    try std.testing.expect(after_enew.id != buf1_id);
+
+    // 4. Switch back to buffer 1 and append 1 more line (must not double-count via stale Lua callback)
+    try user_nvim.command(alloc, "buffer 1");
+
+    var back_to_buf1 = after_enew;
+    for (0..40) |_| {
+        back_to_buf1 = try Helper.readSingle(&cache, alloc);
+        if (back_to_buf1.id == buf1_id and back_to_buf1.line_count == 4) break;
+        io.sleep(.{ .nanoseconds = 25 * std.time.ns_per_ms }, .awake) catch {};
+    }
+    try std.testing.expectEqual(buf1_id, back_to_buf1.id);
+    try std.testing.expectEqual(@as(i64, 4), back_to_buf1.line_count);
+
+    try user_nvim.command(alloc, "call append(line('$'), ['five'])");
+
+    var after_fifth = back_to_buf1;
+    for (0..40) |_| {
+        after_fifth = try Helper.readSingle(&cache, alloc);
+        if (after_fifth.changedtick > back_to_buf1.changedtick) break;
+        io.sleep(.{ .nanoseconds = 25 * std.time.ns_per_ms }, .awake) catch {};
+    }
+    try std.testing.expect(after_fifth.changedtick > back_to_buf1.changedtick);
+    try std.testing.expectEqual(@as(i64, 5), after_fifth.line_count);
+}
